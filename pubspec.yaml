@@ -1,7 +1,7 @@
 name: server_box
 description: server status & toolbox app.
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.0.0+2
 
 environment:
   sdk: ">=3.0.0"
@@ -65,6 +65,8 @@ dependency_overrides:
   # 0.7.2 compiles on Flutter 3.22, patched with TargetPlatform.ohos switch cases.
   flutter_math_fork:
     path: vendor/flutter_math_fork
+  # dynamic_color 1.8.0+ needs Color.toARGB32 (Flutter 3.27+); lock to 1.7.0 for Flutter 3.22.
+  dynamic_color: 1.7.0
 #   dartssh2:
 #     path: ../dartssh2
   # fl_lib:

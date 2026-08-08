@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:ui' show ImageFilter;
 
 import 'package:fl_lib/fl_lib.dart';
 import 'package:flutter/material.dart';
@@ -140,7 +141,10 @@ class _HomePageState extends State<HomePage>
     return Scaffold(
       drawer: _buildDrawer(),
       appBar: appBar,
-      body: PageView.builder(
+      body: Center(
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 900),
+          child: PageView.builder(
         controller: _pageController,
         itemCount: AppTab.values.length,
         physics: const NeverScrollableScrollPhysics(),
@@ -151,6 +155,8 @@ class _HomePageState extends State<HomePage>
             _selectIndex.value = value;
           }
         },
+          ),
+        ),
       ),
       bottomNavigationBar: ValBuilder(
         listenable: _isLandscape,
@@ -167,48 +173,70 @@ class _HomePageState extends State<HomePage>
   }
 
   Widget _buildBottomBar(bool ls) {
-    return NavigationBar(
-      selectedIndex: _selectIndex.value,
-      height: kBottomNavigationBarHeight * (ls ? 0.75 : 1.1),
-      animationDuration: const Duration(milliseconds: 250),
-      onDestinationSelected: (int index) {
-        if (_selectIndex.value == index) return;
-        _selectIndex.value = index;
-        _switchingPage = true;
-        _pageController.animateToPage(
-          index,
-          duration: const Duration(milliseconds: 677),
-          curve: Curves.fastLinearToSlowEaseIn,
-        );
-        Future.delayed(const Duration(milliseconds: 677), () {
-          _switchingPage = false;
-        });
-      },
-      labelBehavior: ls
-          ? NavigationDestinationLabelBehavior.alwaysHide
-          : NavigationDestinationLabelBehavior.onlyShowSelected,
-      destinations: [
-        NavigationDestination(
-          icon: const Icon(BoxIcons.bx_server),
-          label: l10n.server,
-          selectedIcon: const Icon(BoxIcons.bxs_server),
+    final scheme = Theme.of(context).colorScheme;
+    return SafeArea(
+      top: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(28),
+          child: BackdropFilter(
+            filter: ImageFilter.blur(sigmaX: 20, sigmaY: 20),
+            child: Container(
+              decoration: BoxDecoration(
+                color: scheme.surfaceContainerHighest.withOpacity(0.72),
+                border: Border.all(
+                  color: scheme.outlineVariant.withOpacity(0.45),
+                ),
+              ),
+              child: NavigationBar(
+                backgroundColor: Colors.transparent,
+                selectedIndex: _selectIndex.value,
+                          height: kBottomNavigationBarHeight * (ls ? 0.75 : 1.1),
+                animationDuration: const Duration(milliseconds: 250),
+                onDestinationSelected: (int index) {
+                  if (_selectIndex.value == index) return;
+                  _selectIndex.value = index;
+                  _switchingPage = true;
+                  _pageController.animateToPage(
+                    index,
+                    duration: const Duration(milliseconds: 677),
+                    curve: Curves.fastLinearToSlowEaseIn,
+                  );
+                  Future.delayed(const Duration(milliseconds: 677), () {
+                    _switchingPage = false;
+                  });
+                },
+                labelBehavior: ls
+                    ? NavigationDestinationLabelBehavior.alwaysHide
+                    : NavigationDestinationLabelBehavior.onlyShowSelected,
+                destinations: [
+                  NavigationDestination(
+                    icon: const Icon(BoxIcons.bx_server),
+                    label: l10n.server,
+                    selectedIcon: const Icon(BoxIcons.bxs_server),
+                  ),
+                  const NavigationDestination(
+                    icon: Icon(Icons.terminal_outlined),
+                    label: 'SSH',
+                    selectedIcon: Icon(Icons.terminal),
+                  ),
+                  NavigationDestination(
+                    icon: const Icon(MingCute.file_code_line),
+                    label: l10n.snippet,
+                    selectedIcon: const Icon(MingCute.file_code_fill),
+                  ),
+                  const NavigationDestination(
+                    icon: Icon(MingCute.planet_line),
+                    label: 'Ping',
+                    selectedIcon: Icon(MingCute.planet_fill),
+                  ),
+                ],
+              ),
+            ),
+          ),
         ),
-        const NavigationDestination(
-          icon: Icon(Icons.terminal_outlined),
-          label: 'SSH',
-          selectedIcon: Icon(Icons.terminal),
-        ),
-        NavigationDestination(
-          icon: const Icon(MingCute.file_code_line),
-          label: l10n.snippet,
-          selectedIcon: const Icon(MingCute.file_code_fill),
-        ),
-        const NavigationDestination(
-          icon: Icon(MingCute.planet_line),
-          label: 'Ping',
-          selectedIcon: Icon(MingCute.planet_fill),
-        ),
-      ],
+      ),
     );
   }
 
