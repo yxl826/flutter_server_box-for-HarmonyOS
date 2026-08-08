@@ -7,5 +7,5 @@ extension BuildDataX on BuildData {
 /// Version constants for the OHOS (HarmonyOS) release.
 abstract final class OhosBuild {
   static const appName = 'ServerBox for HarmonyOS';
-  static const version = '1.0.0.2';
+  static const version = '1.0.5';
 }
