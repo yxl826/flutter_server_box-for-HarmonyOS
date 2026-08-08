@@ -1,56 +1,128 @@
 import 'package:dynamic_color/dynamic_color.dart';
 import 'package:fl_lib/fl_lib.dart';
-import 'package:fl_lib/l10n/gen_l10n/lib_l10n.dart';
+import 'package:fl_lib/generated/l10n/lib_l10n.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
-import 'package:flutter_gen/gen_l10n/l10n.dart';
+import 'package:icons_plus/icons_plus.dart';
+import 'package:server_box/core/app_navigator.dart';
 import 'package:server_box/core/extension/context/locale.dart';
 import 'package:server_box/data/res/build_data.dart';
-import 'package:server_box/data/res/rebuild.dart';
 import 'package:server_box/data/res/store.dart';
-import 'package:server_box/view/page/home/home.dart';
-import 'package:icons_plus/icons_plus.dart';
+import 'package:server_box/generated/l10n/l10n.dart';
+import 'package:server_box/view/page/home.dart';
 
 part 'intro.dart';
 
-class MyApp extends StatelessWidget {
+Widget _buildHomeWithWindowFrame() {
+  return VirtualWindowFrame(title: BuildData.name, child: const HomePage());
+}
+
+class MyApp extends StatefulWidget {
   const MyApp({super.key});
 
   @override
+  State<MyApp> createState() => _MyAppState();
+}
+
+class _MyAppState extends State<MyApp> {
+  late final Future<List<IntroPageBuilder>> _introFuture = _IntroPage.builders;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _syncSystemUi();
+  }
+
+  /// Keeps status bar / navigation bar (dock) icons in sync with the theme,
+  /// re-applied on every build so theme switches take effect immediately.
+  void _syncSystemUi() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      SystemUIs.setTransparentNavigationBar(context, brightness: _effectiveBrightness());
+    });
+  }
+
+  Brightness _effectiveBrightness() {
+    final tMode = Stores.setting.themeMode.fetch();
+    return switch (tMode) {
+      1 => Brightness.light,
+      2 || 3 => Brightness.dark,
+      _ => WidgetsBinding.instance.platformDispatcher.platformBrightness,
+    };
+  }
+
+  @override
   Widget build(BuildContext context) {
-    _setup(context);
+    _syncSystemUi();
     return ListenableBuilder(
       listenable: RNodes.app,
       builder: (context, _) {
         if (!Stores.setting.useSystemPrimaryColor.fetch()) {
-          UIs.colorSeed = Color(Stores.setting.primaryColor.fetch());
-          UIs.primaryColor = UIs.colorSeed;
-          return _buildApp(context);
+          return _build(context);
         }
-        return DynamicColorBuilder(
-          builder: (light, dark) {
-            final lightTheme = ThemeData(
-              useMaterial3: true,
-              colorScheme: light,
-            );
-            final darkTheme = ThemeData(
-              useMaterial3: true,
-              brightness: Brightness.dark,
-              colorScheme: dark,
-            );
-            if (context.isDark && light != null) {
-              UIs.primaryColor = light.primary;
-            } else if (!context.isDark && dark != null) {
-              UIs.primaryColor = dark.primary;
-            }
-            return _buildApp(context, light: lightTheme, dark: darkTheme);
-          },
-        );
+
+        return _buildDynamicColor(context);
       },
     );
   }
 
-  Widget _buildApp(BuildContext ctx, {ThemeData? light, ThemeData? dark}) {
+  Widget _build(BuildContext context) {
+    final colorSeed = Color(Stores.setting.colorSeed.fetch());
+
+    UIs.colorSeed = colorSeed;
+    UIs.primaryColor = colorSeed;
+
+    return _buildApp(
+      context,
+      light: ThemeData(
+        useMaterial3: true,
+        colorSchemeSeed: UIs.colorSeed,
+        appBarTheme: AppBarTheme(scrolledUnderElevation: 0.0),
+      ),
+      dark: ThemeData(
+        useMaterial3: true,
+        brightness: Brightness.dark,
+        colorSchemeSeed: UIs.colorSeed,
+        appBarTheme: AppBarTheme(scrolledUnderElevation: 0.0),
+      ),
+    );
+  }
+
+  Widget _buildDynamicColor(BuildContext context) {
+    return DynamicColorBuilder(
+      builder: (light, dark) {
+        final lightSeed = light?.primary;
+        final darkSeed = dark?.primary;
+
+        final lightTheme = ThemeData(
+          useMaterial3: true,
+          colorSchemeSeed: lightSeed,
+          appBarTheme: AppBarTheme(scrolledUnderElevation: 0.0),
+        );
+        final darkTheme = ThemeData(
+          useMaterial3: true,
+          brightness: Brightness.dark,
+          colorSchemeSeed: darkSeed,
+          appBarTheme: AppBarTheme(scrolledUnderElevation: 0.0),
+        );
+
+        if (context.isDark && dark != null) {
+          UIs.primaryColor = dark.primary;
+          UIs.colorSeed = dark.primary;
+        } else if (!context.isDark && light != null) {
+          UIs.primaryColor = light.primary;
+          UIs.colorSeed = light.primary;
+        } else {
+          final fallbackColor = Color(Stores.setting.colorSeed.fetch());
+          UIs.primaryColor = fallbackColor;
+          UIs.colorSeed = fallbackColor;
+        }
+
+        return _buildApp(context, light: lightTheme, dark: darkTheme);
+      },
+    );
+  }
+
+  Widget _buildApp(BuildContext ctx, {required ThemeData light, required ThemeData dark}) {
     final tMode = Stores.setting.themeMode.fetch();
     // Issue #57
     final themeMode = switch (tMode) {
@@ -60,86 +132,46 @@ class MyApp extends StatelessWidget {
     };
     final locale = Stores.setting.locale.fetch().toLocale;
 
-    light ??= ThemeData(
-      useMaterial3: true,
-      colorSchemeSeed: UIs.colorSeed,
-    );
-    dark ??= ThemeData(
-      useMaterial3: true,
-      brightness: Brightness.dark,
-      colorSchemeSeed: UIs.colorSeed,
-    );
-
     return MaterialApp(
-      locale: locale,
-      // Locale text is read from the global `l10n` (not an inherited
-      // dependency), so existing pushed routes don't repaint on rebuild.
-      // Keying MaterialApp by locale force-remounts the whole app so the
-      // language switch takes effect immediately instead of on restart.
       key: ValueKey(locale),
-      localizationsDelegates: const [
-        LibLocalizations.delegate,
-        ...AppLocalizations.localizationsDelegates,
-      ],
+      navigatorKey: AppNavigator.key,
+      builder: (context, child) {
+        return ResponsivePoints.builder(context, child);
+      },
+      locale: locale,
+      localizationsDelegates: const [LibLocalizations.delegate, ...AppLocalizations.localizationsDelegates],
       supportedLocales: AppLocalizations.supportedLocales,
       localeListResolutionCallback: LocaleUtil.resolve,
+      navigatorObservers: [AppRouteObserver.instance],
       title: BuildData.name,
       themeMode: themeMode,
-      theme: light,
-      darkTheme: tMode < 3 ? dark : dark.toAmoled,
-      home: _buildAppContent(ctx),
-      // Make the status bar / navigation bar icons follow the app theme
-      // (this is effective on platforms where the engine supports
-      // [SystemUiOverlayStyle], including HarmonyOS).
-      builder: (ctx, child) {
-        final isDark = Theme.of(ctx).brightness == Brightness.dark;
-        final overlay = SystemUiOverlayStyle(
-          statusBarColor: Colors.transparent,
-          statusBarIconBrightness:
-              isDark ? Brightness.light : Brightness.dark,
-          statusBarBrightness: isDark ? Brightness.dark : Brightness.light,
-          systemNavigationBarColor: Colors.transparent,
-          systemNavigationBarContrastEnforced: true,
-          systemNavigationBarIconBrightness:
-              isDark ? Brightness.light : Brightness.dark,
-        );
-        return AnnotatedRegion<SystemUiOverlayStyle>(
-          value: overlay,
-          child: child ?? const SizedBox.shrink(),
-        );
-      },
+      theme: light.fixWindowsFont,
+      darkTheme: (tMode < 3 ? dark : dark.toAmoled).fixWindowsFont,
+      home: FutureBuilder<List<IntroPageBuilder>>(
+        future: _introFuture,
+        builder: (context, snapshot) {
+          context.setLibL10n();
+          final appL10n = AppLocalizations.of(context);
+          if (appL10n != null) l10n = appL10n;
+
+          Widget child;
+          var hasWindowFrame = false;
+          if (snapshot.connectionState == ConnectionState.waiting) {
+            child = const Scaffold(body: Center(child: CircularProgressIndicator()));
+          } else {
+            final intros = snapshot.data ?? [];
+            if (intros.isNotEmpty) {
+              child = _IntroPage(intros);
+            } else {
+              child = _buildHomeWithWindowFrame();
+              hasWindowFrame = true;
+            }
+          }
+
+          if (hasWindowFrame) return child;
+          return VirtualWindowFrame(title: BuildData.name, child: child);
+        },
+      ),
     );
   }
-
-  Widget _buildAppContent(BuildContext ctx) {
-    //if (Pros.app.isWearOS) return const WearHome();
-    return const _AppContent(
-      intro: _IntroPage(),
-      child: HomePage(),
-    );
-  }
-}
-
-/// It's used for init settings related to [BuildContext]
-final class _AppContent extends StatelessWidget {
-  final Widget child;
-  final Widget intro;
-
-  const _AppContent({required this.child, required this.intro});
-
-  @override
-  Widget build(BuildContext context) {
-    context.setLibL10n();
-    final appL10n = AppLocalizations.of(context);
-    if (appL10n != null) l10n = appL10n;
-
-    final showIntro = Stores.setting.showIntro.fetch();
-    if (showIntro) return intro;
-
-    return child;
-  }
-}
-
-void _setup(BuildContext context) async {
-  SystemUIs.setTransparentNavigationBar(context);
 }

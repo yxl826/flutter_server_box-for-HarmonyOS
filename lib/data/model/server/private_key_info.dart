@@ -1,18 +1,18 @@
-import 'package:hive_flutter/hive_flutter.dart';
+import 'package:json_annotation/json_annotation.dart';
 
 part 'private_key_info.g.dart';
 
-@HiveType(typeId: 1)
+@JsonSerializable()
 class PrivateKeyInfo {
-  @HiveField(0)
   final String id;
-  @HiveField(1)
+  @JsonKey(name: 'private_key')
   final String key;
 
-  const PrivateKeyInfo({
-    required this.id,
-    required this.key,
-  });
+  const PrivateKeyInfo({required this.id, required this.key});
+
+  factory PrivateKeyInfo.fromJson(Map<String, dynamic> json) => _$PrivateKeyInfoFromJson(json);
+
+  Map<String, dynamic> toJson() => _$PrivateKeyInfoToJson(this);
 
   String? get type {
     final lines = key.split('\n');
@@ -25,16 +25,5 @@ class PrivateKeyInfo {
       return null;
     }
     return splited[1];
-  }
-
-  PrivateKeyInfo.fromJson(Map<String, dynamic> json)
-      : id = json["id"].toString(),
-        key = json["private_key"].toString();
-
-  Map<String, dynamic> toJson() {
-    final data = <String, String>{};
-    data["id"] = id;
-    data["private_key"] = key;
-    return data;
   }
 }

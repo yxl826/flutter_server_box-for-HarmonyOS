@@ -1,6 +1,6 @@
 import 'package:fl_lib/fl_lib.dart';
 
-import '../../../data/res/misc.dart';
+import 'package:server_box/data/res/misc.dart';
 
 class _ProcValIdxMap {
   final int pid;
@@ -58,7 +58,7 @@ class Proc {
     required this.command,
   });
 
-  factory Proc.parse(String raw, _ProcValIdxMap map) {
+  factory Proc._parse(String raw, _ProcValIdxMap map) {
     final parts = raw.split(RegExp(r'\s+'));
     return Proc(
       user: map.user == null ? null : parts[map.user!],
@@ -97,8 +97,8 @@ class Proc {
   }
 
   String get binary {
-    final parts = command.split(' ');
-    return parts[0];
+    final parts = command.trim().split(' ').where((e) => e.isNotEmpty).toList();
+    return parts.isNotEmpty ? parts[0] : '';
   }
 }
 
@@ -107,10 +107,7 @@ class PsResult {
   final List<Proc> procs;
   final String? error;
 
-  const PsResult({
-    required this.procs,
-    this.error,
-  });
+  const PsResult({required this.procs, this.error});
 
   factory PsResult.parse(String raw, {ProcSortMode sort = ProcSortMode.cpu}) {
     final lines = raw.split('\n').map((e) => e.trim()).toList();
@@ -139,7 +136,7 @@ class PsResult {
       final line = lines[i];
       if (line.isEmpty) continue;
       try {
-        procs.add(Proc.parse(line, map));
+        procs.add(Proc._parse(line, map));
       } catch (e, trace) {
         errs.add('$line: $e');
         Loggers.app.warning('Process failed', e, trace);
@@ -167,14 +164,7 @@ class PsResult {
   }
 }
 
-enum ProcSortMode {
-  cpu,
-  mem,
-  pid,
-  user,
-  name,
-  ;
-}
+enum ProcSortMode { cpu, mem, pid, user, name }
 
 extension _StrIndex on List<String> {
   int? indexOfOrNull(String val) {

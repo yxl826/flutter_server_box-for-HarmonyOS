@@ -11,13 +11,13 @@ enum ServerDetailCards {
   swap(Icons.swap_horiz),
   gpu(Bootstrap.gpu_card),
   disk(Bootstrap.device_hdd_fill),
+  smart(Icons.health_and_safety, sinceBuild: 1174),
   net(ZondIcons.network),
   sensor(MingCute.dashboard_4_line),
   temp(FontAwesome.temperature_empty_solid),
   battery(Icons.battery_full),
   pve(BoxIcons.bxs_dashboard, sinceBuild: 818),
-  custom(Icons.code, sinceBuild: 825),
-  ;
+  custom(Icons.code, sinceBuild: 825);
 
   final int? sinceBuild;
 
@@ -31,19 +31,20 @@ enum ServerDetailCards {
   static final names = values.map((e) => e.name).toList();
 
   String get toStr => switch (this) {
-        about => l10n.about,
-        cpu => 'CPU',
-        mem => 'RAM',
-        swap => 'Swap',
-        gpu => 'GPU',
-        disk => l10n.disk,
-        net => l10n.net,
-        sensor => l10n.sensors,
-        temp => l10n.temperature,
-        battery => l10n.battery,
-        pve => 'PVE',
-        custom => l10n.cmd,
-      };
+    about => libL10n.about,
+    cpu => 'CPU',
+    mem => 'RAM',
+    swap => 'Swap',
+    gpu => 'GPU',
+    disk => libL10n.disk,
+    smart => l10n.diskHealth,
+    net => libL10n.net,
+    sensor => libL10n.sensors,
+    temp => libL10n.temperature,
+    battery => libL10n.battery,
+    pve => 'PVE',
+    custom => libL10n.cmd,
+  };
 
   /// If:
   /// Version 1 => user set [about], default is [about, cpu]

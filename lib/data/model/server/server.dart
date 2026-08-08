@@ -1,51 +1,17 @@
-import 'package:dartssh2/dartssh2.dart';
 import 'package:fl_lib/fl_lib.dart';
-import 'package:server_box/core/extension/context/locale.dart';
-import 'package:server_box/data/model/app/error.dart';
-import 'package:server_box/data/model/app/shell_func.dart';
+import 'package:server_box/data/model/app/scripts/cmd_types.dart';
+import 'package:server_box/data/model/server/amd.dart';
 import 'package:server_box/data/model/server/battery.dart';
 import 'package:server_box/data/model/server/conn.dart';
 import 'package:server_box/data/model/server/cpu.dart';
 import 'package:server_box/data/model/server/disk.dart';
+import 'package:server_box/data/model/server/disk_smart.dart';
 import 'package:server_box/data/model/server/memory.dart';
 import 'package:server_box/data/model/server/net_speed.dart';
 import 'package:server_box/data/model/server/nvdia.dart';
 import 'package:server_box/data/model/server/sensors.dart';
-import 'package:server_box/data/model/server/server_private_info.dart';
 import 'package:server_box/data/model/server/system.dart';
 import 'package:server_box/data/model/server/temp.dart';
-
-import '../app/tag_pickable.dart';
-
-part 'server.ext.dart';
-
-class Server implements TagPickable {
-  ServerPrivateInfo spi;
-  ServerStatus status;
-  SSHClient? client;
-  ServerConn conn;
-
-  Server(
-    this.spi,
-    this.status,
-    this.conn, {
-    this.client,
-  });
-
-  @override
-  bool containsTag(String tag) {
-    return spi.tags?.contains(tag) ?? false;
-  }
-
-  @override
-  String get tagName => spi.id;
-
-  bool get needGenClient => conn < ServerConn.connecting;
-
-  bool get canViewDetails => conn == ServerConn.finished;
-
-  String get id => spi.id;
-}
 
 class ServerStatus {
   Cpus cpu;
@@ -58,7 +24,9 @@ class ServerStatus {
   SystemType system;
   Err? err;
   DiskIO diskIO;
+  List<DiskSmart> diskSmart;
   List<NvidiaSmiItem>? nvidia;
+  List<AmdSmiItem>? amd;
   final List<Battery> batteries = [];
   final Map<StatusCmdType, String> more = {};
   final List<SensorItem> sensors = [];
@@ -75,6 +43,7 @@ class ServerStatus {
     required this.temps,
     required this.system,
     required this.diskIO,
+    this.diskSmart = const [],
     this.err,
     this.nvidia,
     this.diskUsage,
@@ -95,5 +64,5 @@ enum ServerConn {
   /// Status parsing finished
   finished;
 
-  operator <(ServerConn other) => index < other.index;
+  bool operator <(ServerConn other) => index < other.index;
 }

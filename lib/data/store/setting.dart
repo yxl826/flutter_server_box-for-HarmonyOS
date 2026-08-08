@@ -1,124 +1,105 @@
+import 'dart:convert';
+
 import 'package:fl_lib/fl_lib.dart';
 import 'package:server_box/data/model/app/menu/server_func.dart';
+import 'package:server_box/data/model/app/net_view.dart';
 import 'package:server_box/data/model/app/server_detail_card.dart';
+import 'package:server_box/data/model/app/tab.dart';
 import 'package:server_box/data/model/ssh/virtual_key.dart';
+import 'package:server_box/data/res/default.dart';
 
-import '../model/app/net_view.dart';
-import '../res/default.dart';
+class SettingStore extends HiveStore {
+  SettingStore._() : super('setting');
 
-class SettingStore extends PersistentStore {
-  SettingStore() : super('setting');
-
-  // ------BEGIN------
-  //
-  // These settings are not displayed in the settings page
-  // You can edit them in the settings json editor (by long press the settings
-  // item in the drawer of the home page)
-
-  /// Discussion #146
-  late final serverTabUseOldUI = property(
-    'serverTabUseOldUI',
-    false,
-  );
+  static final instance = SettingStore._();
 
   /// Time out for server connect and more...
-  late final timeout = property(
-    'timeOut',
-    5,
-  );
+  late final timeout = propertyDefault('timeOut', 5);
 
   /// Record history of SFTP path and etc.
-  late final recordHistory = property(
-    'recordHistory',
-    true,
-  );
+  late final recordHistory = propertyDefault('recordHistory', true);
 
   /// Lanch page idx
-  late final launchPage = property(
-    'launchPage',
-    Defaults.launchPageIdx,
-  );
+  // late final launchPage = property('launchPage', Defaults.launchPageIdx);
 
   /// Disk view: amount / IO
-  late final serverTabPreferDiskAmount = property(
-    'serverTabPreferDiskAmount',
-    false,
-  );
-
-  // ------END------
+  late final serverTabPreferDiskAmount = propertyDefault('serverTabPreferDiskAmount', false);
 
   /// Bigger for bigger font size
   /// 1.0 means 100%
   /// Warning: This may cause some UI issues
-  late final textFactor = property(
-    'textFactor',
-    1.0,
-  );
+  late final textFactor = propertyDefault('textFactor', 1.0);
 
-  late final primaryColor = property(
-    'primaryColor',
-    4287106639,
-  );
+  /// The seed of color scheme
+  late final colorSeed = propertyDefault('primaryColor', 4287106639);
 
-  late final serverStatusUpdateInterval = property(
+  late final serverStatusUpdateInterval = propertyDefault(
     'serverStatusUpdateInterval',
     Defaults.updateInterval,
   );
 
   // Max retry count when connect to server
-  late final maxRetryCount = property('maxRetryCount', 2);
+  late final maxRetryCount = propertyDefault('maxRetryCount', 2);
 
   // Night mode: 0 -> auto, 1 -> light, 2 -> dark, 3 -> AMOLED, 4 -> AUTO-AMOLED
-  late final themeMode = property('themeMode', 0);
+  late final themeMode = propertyDefault('themeMode', 0);
 
   // Font file path
-  late final fontPath = property('fontPath', '');
+  late final fontPath = propertyDefault('fontPath', '');
 
   // Backgroud running (Android)
-  late final bgRun = property('bgRun', isAndroid);
+  late final bgRun = propertyDefault('bgRun', isAndroid);
 
   // Server order
-  late final serverOrder = listProperty<String>('serverOrder', []);
+  late final serverOrder = listProperty<String>('serverOrder');
 
-  late final snippetOrder = listProperty<String>('snippetOrder', []);
+  late final snippetOrder = listProperty<String>('snippetOrder');
 
   // Server details page cards order
   late final detailCardOrder = listProperty(
     'detailCardOrder',
-    ServerDetailCards.values.map((e) => e.name).toList(),
+    defaultValue: ServerDetailCards.values.map((e) => e.name).toList(),
   );
+
+  // Disabled detail cards (for persistence when toggling visibility)
+  late final detailCardDisabled = listProperty<String>('detailCardDisabled');
+
+  // Disabled SSH virtual keys (for persistence when toggling visibility)
+  late final sshVirtKeysDisabled = listProperty<int>('sshVirtKeysDisabled');
 
   // SSH term font size
-  late final termFontSize = property('termFontSize', 13.0);
+  late final termFontSize = propertyDefault('termFontSize', 13.0);
 
   // Locale
-  late final locale = property('locale', '');
+  late final locale = propertyDefault('locale', '');
 
   // SSH virtual key (ctrl | alt) auto turn off
-  late final sshVirtualKeyAutoOff = property('sshVirtualKeyAutoOff', true);
+  late final sshVirtualKeyAutoOff = propertyDefault('sshVirtualKeyAutoOff', true);
 
-  late final editorFontSize = property('editorFontSize', 12.5);
+  late final editorFontSize = propertyDefault('editorFontSize', 12.5);
+
+  late final editorFontFamily = propertyDefault('editorFontFamily', '');
+
+  /// Trusted SSH host key fingerprints keyed by `serverId::keyType`.
+  late final sshKnownHostFingerprints = propertyDefault<Map<String, String>>(
+    'sshKnownHostFingerprints',
+    const {},
+    fromObj: (raw) {
+      if (raw is Map) {
+        return raw.map((key, value) => MapEntry(key.toString(), value.toString()));
+      }
+      return <String, String>{};
+    },
+  );
 
   // Editor theme
-  late final editorTheme = property(
-    'editorTheme',
-    Defaults.editorTheme,
-  );
+  late final editorTheme = propertyDefault('editorTheme', Defaults.editorTheme);
 
-  late final editorDarkTheme = property(
-    'editorDarkTheme',
-    Defaults.editorDarkTheme,
-  );
+  late final editorDarkTheme = propertyDefault('editorDarkTheme', Defaults.editorDarkTheme);
 
-  late final fullScreen = property(
-    'fullScreen',
-    false,
-  );
+  late final fullScreen = propertyDefault('fullScreen', false);
 
-  late final fullScreenJitter = property(
-    'fullScreenJitter',
-    true,
-  );
+  late final fullScreenJitter = propertyDefault('fullScreenJitter', true);
 
   // late final fullScreenRotateQuarter = property(
   //   'fullScreenRotateQuarter',
@@ -130,160 +111,170 @@ class SettingStore extends PersistentStore {
   //   TextInputType.text.index,
   // );
 
-  late final sshVirtKeys = listProperty(
+  late final sshVirtKeys = listProperty<int>(
     'sshVirtKeys',
-    VirtKey.defaultOrder.map((e) => e.index).toList(),
+    defaultValue: VirtKeyX.defaultOrder.map((e) => e.index).toList(),
+    fromObj: (val) => List<int>.from(val as List),
   );
 
-  late final netViewType = property(
+  late final netViewType = propertyDefault(
     'netViewType',
     NetViewType.speed,
+    fromObj: (val) => NetViewType.values.firstWhereOrNull((e) => e.name == val),
+    toObj: (type) => type?.name,
   );
 
   // Only valid on iOS
-  late final autoUpdateHomeWidget = property(
-    'autoUpdateHomeWidget',
-    isIOS,
-  );
+  late final autoUpdateHomeWidget = propertyDefault('autoUpdateHomeWidget', isIOS);
 
   /// Display server tab function buttons on the bottom of each server card if [true]
   ///
   /// Otherwise, display them on the top of server detail page
-  late final moveOutServerTabFuncBtns = property(
-    'moveOutServerTabFuncBtns',
-    true,
-  );
+  late final moveServerFuncs = propertyDefault('moveOutServerTabFuncBtns', false);
 
   /// Whether use `rm -r` to delete directory on SFTP
-  late final sftpRmrDir = property(
-    'sftpRmrDir',
-    false,
-  );
+  late final sftpRmrDir = propertyDefault('sftpRmrDir', false);
 
   /// Whether use system's primary color as the app's primary color
-  late final useSystemPrimaryColor = property(
-    'useSystemPrimaryColor',
-    false,
-  );
-
-  /// Only valid on iOS and macOS
-  late final icloudSync = property(
-    'icloudSync',
-    false,
-  );
-
-  /// Only valid on iOS / Android / Windows
-  late final useBioAuth = property(
-    'useBioAuth',
-    false,
-  );
+  late final useSystemPrimaryColor = propertyDefault('useSystemPrimaryColor', false);
 
   /// The performance of highlight is bad
-  late final editorHighlight = property('editorHighlight', true);
+  late final editorHighlight = propertyDefault('editorHighlight', true);
 
   /// Open SFTP with last viewed path
-  late final sftpOpenLastPath = property('sftpOpenLastPath', true);
+  late final sftpOpenLastPath = propertyDefault('sftpOpenLastPath', true);
 
   /// Show folders first in SFTP file browser
-  late final sftpShowFoldersFirst = property('sftpShowFoldersFirst', true);
+  late final sftpShowFoldersFirst = propertyDefault('sftpShowFoldersFirst', true);
 
   /// Show tip of suspend
-  late final showSuspendTip = property('showSuspendTip', true);
-
-  /// Webdav sync
-  late final webdavSync = property('webdavSync', false);
-  late final webdavUrl = property('webdavUrl', '', updateLastModified: false);
-  late final webdavUser = property('webdavUser', '', updateLastModified: false);
-  late final webdavPwd = property('webdavPwd', '', updateLastModified: false);
+  late final showSuspendTip = propertyDefault('showSuspendTip', true);
 
   /// Whether collapse UI items by default
-  late final collapseUIDefault = property('collapseUIDefault', true);
+  late final collapseUIDefault = propertyDefault('collapseUIDefault', true);
 
-  late final serverFuncBtns = listProperty(
-    'serverBtns',
-    ServerFuncBtn.defaultIdxs,
-  );
+  /// Terminal AI helper configuration
+  late final askAiBaseUrl = propertyDefault('askAiBaseUrl', 'https://api.openai.com');
+  late final askAiApiKey = propertyDefault('askAiApiKey', '');
+  late final askAiModel = propertyDefault('askAiModel', 'gpt-5.4-mini');
+
+  late final serverFuncBtns = listProperty('serverBtns', defaultValue: ServerFuncBtn.defaultIdxs);
 
   /// Docker is more popular than podman, set to `false` to use docker
-  late final usePodman = property('usePodman', false);
+  late final usePodman = propertyDefault('usePodman', false);
 
   /// Try to use `sudo` to run docker command
-  late final containerTrySudo = property('containerTrySudo', true);
+  late final containerTrySudo = propertyDefault('containerTrySudo', true);
 
   /// Keep previous server status when err occurs
-  late final keepStatusWhenErr = property('keepStatusWhenErr', false);
+  late final keepStatusWhenErr = propertyDefault('keepStatusWhenErr', false);
 
   /// Parse container stat
-  late final containerParseStat = property('containerParseStat', true);
+  late final containerParseStat = propertyDefault('containerParseStat', true);
 
   /// Auto refresh container status
-  late final contaienrAutoRefresh = property('contaienrAutoRefresh', true);
+  late final containerAutoRefresh = propertyDefault('containerAutoRefresh', true);
 
   /// Use double column servers page on Desktop
-  late final doubleColumnServersPage = property(
-    'doubleColumnServersPage',
-    true,
-  );
+  late final doubleColumnServersPage = propertyDefault('doubleColumnServersPage', true);
 
   /// Ignore local network device (eg: br-xxx, ovs-system...)
   /// when building traffic view on server tab
-  late final ignoreLocalNet = property('ignoreLocalNet', true);
+  //late final ignoreLocalNet = propertyDefault('ignoreLocalNet', true);
 
   /// Remerber pwd in memory
   /// Used for [DialogX.showPwdDialog]
-  late final rememberPwdInMem = property('rememberPwdInMem', true);
+  late final rememberPwdInMem = propertyDefault('rememberPwdInMem', true);
 
   /// SSH Term Theme
   /// 0: follow app theme, 1: light, 2: dark
-  late final termTheme = property('termTheme', 0);
+  late final termTheme = propertyDefault('termTheme', 0);
 
   /// Compatiablity for Chinese Android.
   /// Set it to true, if you use Safe Keyboard on Chinese Android
-  // late final cnKeyboardComp = property('cnKeyboardComp', false);
+  // late final cnKeyboardComp = propertyDefault('cnKeyboardComp', false);
 
-  late final lastVer = property('lastVer', 0);
-
-  /// Use CupertinoPageRoute for all routes
-  late final cupertinoRoute = property('cupertinoRoute', isIOS);
+  late final lastVer = propertyDefault('lastVer', 0);
 
   /// Hide title bar on desktop
-  late final hideTitleBar = property('hideTitleBar', isDesktop);
+  late final hideTitleBar = propertyDefault('hideTitleBar', isDesktop);
 
   /// Display CPU view as progress, also called as old CPU view
-  late final cpuViewAsProgress = property('cpuViewAsProgress', false);
+  late final cpuViewAsProgress = propertyDefault('cpuViewAsProgress', false);
 
-  late final displayCpuIndex = property('displayCpuIndex', true);
+  late final displayCpuIndex = propertyDefault('displayCpuIndex', true);
 
-  late final editorSoftWrap = property('editorSoftWrap', isIOS);
+  late final editorSoftWrap = propertyDefault('editorSoftWrap', isIOS);
 
-  late final sshTermHelpShown = property('sshTermHelpShown', false);
+  late final sshTermHelpShown = propertyDefault('sshTermHelpShown', false);
 
-  late final horizonVirtKey = property('horizonVirtKey', false);
+  late final horizonVirtKey = propertyDefault('horizonVirtKey', false);
 
   /// general wake lock
-  late final generalWakeLock = property('generalWakeLock', false);
+  late final generalWakeLock = propertyDefault('generalWakeLock', false);
 
   /// ssh page
-  late final sshWakeLock = property('sshWakeLock', true);
+  late final sshWakeLock = propertyDefault('sshWakeLock', true);
+  late final sshBgImage = propertyDefault('sshBgImage', '');
+  late final sshBgOpacity = propertyDefault('sshBgOpacity', 0.3);
+  late final sshBlurRadius = propertyDefault('sshBlurRadius', 0.0);
 
   /// fmt: https://example.com/{DIST}-{BRIGHT}.png
-  late final serverLogoUrl = property('serverLogoUrl', '');
+  late final serverLogoUrl = propertyDefault('serverLogoUrl', '');
 
-  /// If it's empty, skip change window size.
-  /// Format: {width}x{height}
-  late final windowSize = property('windowSize', '');
+  /// For desktop only.
+  /// Record the position and size of the window.
+  late final windowState = property<WindowState>(
+    'windowState',
+    fromObj: (raw) => WindowState.fromJson(jsonDecode(raw as String) as Map<String, dynamic>),
+    toObj: (state) => state == null ? null : jsonEncode(state.toJson()),
+  );
 
-  late final showIntro = property('showIntro', true);
+  late final introVer = propertyDefault('introVer', 0);
 
-  // Never show these settings for users
-  //
-  // ------BEGIN------
+  late final letterCache = propertyDefault('letterCache', false);
+
+  /// Set it to `$EDITOR`, `vim` and etc. to use remote system editor in SSH terminal.
+  /// Set it empty to use local editor GUI.
+  late final sftpEditor = propertyDefault('sftpEditor', '');
+
+  /// Preferred terminal emulator command on desktop
+  late final desktopTerminal = propertyDefault('desktopTerminal', 'x-terminal-emulator');
+
+  /// Copy the login password to clipboard before launching desktop SSH terminal
+  late final desktopSshAutoCopyPassword = propertyDefault('desktopSshAutoCopyPassword', false);
+
+  /// Run foreground service on Android, if the SSH terminal is running
+  late final fgService = propertyDefault('fgService', false);
+
+  /// Close the editor after saving
+  late final closeAfterSave = propertyDefault('closeAfterSave', false);
 
   /// Version of store db
-  late final storeVersion = property('storeVersion', 0);
+  late final storeVersion = propertyDefault('storeVersion', 0);
 
   /// Have notified user for notificaiton permission or not
-  late final noNotiPerm = property('noNotiPerm', false);
+  late final noNotiPerm = propertyDefault('noNotiPerm', false);
 
-  // ------END------
+  /// The backup password
+  late final backupasswd = SecureProp('bakPasswd');
+
+  /// Whether to read SSH config from ~/.ssh/config on first time
+  late final firstTimeReadSSHCfg = propertyDefault('firstTimeReadSSHCfg', true);
+
+  /// Tabs at home page
+  late final homeTabs = listProperty(
+    'homeTabs',
+    defaultValue: AppTab.values,
+    fromObj: AppTab.parseAppTabsFromObj,
+    toObj: (val) {
+      return val?.map((e) => e.name).toList() ?? [];
+    },
+  );
+
+  /// Hide port forward beta warning
+  late final portForwardBetaWarned = propertyDefault('portForwardBetaWarned', false);
+
+  late final sshPageSortBy = propertyDefault('sshPageSortBy', 0);
+  late final sshPageSortAsc = propertyDefault('sshPageSortAsc', true);
 }

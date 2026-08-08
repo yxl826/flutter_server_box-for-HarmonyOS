@@ -1,47 +1,41 @@
 import 'package:fl_lib/fl_lib.dart';
 import 'package:flutter/material.dart';
-import 'package:provider/provider.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:server_box/core/extension/context/locale.dart';
-import 'package:server_box/core/route.dart';
-import 'package:server_box/data/res/provider.dart';
+import 'package:server_box/data/model/sftp/worker.dart';
+import 'package:server_box/data/provider/sftp.dart';
+import 'package:server_box/view/page/storage/local.dart';
 
-import '../../../data/model/sftp/req.dart';
-import '../../../data/provider/sftp.dart';
-
-class SftpMissionPage extends StatefulWidget {
+class SftpMissionPage extends ConsumerStatefulWidget {
   const SftpMissionPage({super.key});
 
   @override
-  State<SftpMissionPage> createState() => _SftpMissionPageState();
+  ConsumerState<SftpMissionPage> createState() => _SftpMissionPageState();
+
+  static const route = AppRouteNoArg(page: SftpMissionPage.new, path: '/sftp/mission');
 }
 
-class _SftpMissionPageState extends State<SftpMissionPage> {
+class _SftpMissionPageState extends ConsumerState<SftpMissionPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: CustomAppBar(
-        title: Text(l10n.mission, style: UIs.text18),
-      ),
+      appBar: CustomAppBar(title: Text(libL10n.mission, style: UIs.text18)),
       body: _buildBody(),
     );
   }
 
   Widget _buildBody() {
-    return Consumer<SftpProvider>(builder: (__, pro, _) {
-      if (pro.status.isEmpty) {
-        return Center(
-          child: Text(l10n.noTask),
-        );
-      }
-      return ListView.builder(
-        padding: const EdgeInsets.all(11),
-        itemCount: pro.status.length,
-        itemBuilder: (context, index) {
-          final status = pro.status[index];
-          return _buildItem(status);
-        },
-      );
-    });
+    final status = ref.watch(sftpProvider.select((pro) => pro.requests));
+    if (status.isEmpty) {
+      return Center(child: Text(libL10n.empty));
+    }
+    return ListView.builder(
+      padding: const EdgeInsets.all(11),
+      itemCount: status.length,
+      itemBuilder: (context, index) {
+        return _buildItem(status[index]);
+      },
+    );
   }
 
   Widget _buildItem(SftpReqStatus status) {
@@ -49,12 +43,9 @@ class _SftpMissionPageState extends State<SftpMissionPage> {
     if (err != null) {
       return _wrapInCard(
         status: status,
-        subtitle: l10n.error,
+        subtitle: libL10n.error,
         trailing: IconButton(
-          onPressed: () => context.showRoundDialog(
-            title: l10n.error,
-            child: Text(err.toString()),
-          ),
+          onPressed: () => context.showRoundDialog(title: libL10n.error, child: Text(err.toString())),
           icon: const Icon(Icons.error),
         ),
       );
@@ -82,7 +73,7 @@ class _SftpMissionPageState extends State<SftpMissionPage> {
       subtitle: l10n.unknown,
       trailing: IconButton(
         onPressed: () => context.showRoundDialog(
-          title: l10n.error,
+          title: libL10n.error,
           child: Text((status.error ?? l10n.unknown).toString()),
         ),
         icon: const Icon(Icons.error),
@@ -110,49 +101,35 @@ class _SftpMissionPageState extends State<SftpMissionPage> {
 
   Widget _buildFinished(SftpReqStatus status) {
     final time = status.spentTime.toString();
-    final str = '${l10n.finished} ${l10n.spentTime(
-      time == 'null' ? l10n.unknown : (time.substring(0, time.length - 7)),
-    )}';
+    final str = l10n.spentTime(time == 'null' ? l10n.unknown : (time.substring(0, time.length - 7)));
 
     final btns = Row(
       mainAxisSize: MainAxisSize.min,
       children: [
         IconButton(
           onPressed: () {
-            final idx = status.req.localPath.lastIndexOf('/');
+            final idx = status.req.localPath.lastIndexOf(Pfs.seperator);
             final dir = status.req.localPath.substring(0, idx);
-            AppRoutes.localStorage(initDir: dir).go(context);
+            LocalFilePage.route.go(context, args: LocalFilePageArgs(initDir: dir));
           },
           icon: const Icon(Icons.file_open),
         ),
         IconButton(
-          onPressed: () => Pfs.share(path: status.req.localPath),
+          onPressed: () => Pfs.sharePaths(paths: [status.req.localPath]),
           icon: const Icon(Icons.open_in_new),
-        )
+        ),
       ],
     );
 
-    return _wrapInCard(
-      status: status,
-      subtitle: str,
-      trailing: btns,
-    );
+    return _wrapInCard(status: status, subtitle: str, trailing: btns);
   }
 
-  Widget _wrapInCard({
-    required SftpReqStatus status,
-    String? subtitle,
-    Widget? trailing,
-  }) {
+  Widget _wrapInCard({required SftpReqStatus status, String? subtitle, Widget? trailing}) {
     final time = DateTime.fromMicrosecondsSinceEpoch(status.id);
     return CardX(
       child: ListTile(
         leading: Text(time.hourMinute),
-        title: Text(
-          status.fileName,
-          overflow: TextOverflow.ellipsis,
-          maxLines: 1,
-        ),
+        title: Text(status.fileName, overflow: TextOverflow.ellipsis, maxLines: 1),
         subtitle: subtitle == null ? null : Text(subtitle, style: UIs.textGrey),
         trailing: trailing,
       ),
@@ -162,19 +139,15 @@ class _SftpMissionPageState extends State<SftpMissionPage> {
   Widget _buildDelete(String name, int id) {
     return IconButton(
       onPressed: () => context.showRoundDialog(
-          title: l10n.attention,
-          child: Text(l10n.askContinue(
-            '${l10n.delete} ${l10n.mission}($name)',
-          )),
-          actions: [
-            TextButton(
-              onPressed: () {
-                Pros.sftp.cancel(id);
-                context.pop();
-              },
-              child: Text(l10n.ok),
-            ),
-          ]),
+        title: libL10n.attention,
+        child: Text(libL10n.askContinue('${libL10n.delete} ${libL10n.mission}($name)')),
+        actions: Btn.ok(
+          onTap: () {
+            ref.read(sftpProvider.notifier).cancel(id);
+            context.pop();
+          },
+        ).toList,
+      ),
       icon: const Icon(Icons.delete),
     );
   }

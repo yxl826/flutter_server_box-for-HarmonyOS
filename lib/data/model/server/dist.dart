@@ -11,7 +11,7 @@ enum Dist {
   alpine,
   rocky,
   deepin,
-  ;
+  coreelec,
 }
 
 extension StringX on String {
@@ -33,6 +33,4 @@ extension StringX on String {
 
 // Special rules
 
-const _wrts = [
-  'istoreos',
-];
+const _wrts = ['istoreos'];

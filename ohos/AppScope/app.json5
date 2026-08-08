@@ -2,9 +2,9 @@
   "app": {
     "bundleName": "cn.yxl826.serverbox",
     "vendor": "serverbox",
-    "versionCode": 1,
-    "versionName": "1.0.0.1",
-    "icon": "$media:app_icon",
+    "versionCode": 5,
+    "versionName": "1.0.5",
+    "icon": "$media:layered_image",
     "label": "$string:app_name"
   }
 }

@@ -2,32 +2,52 @@ import 'dart:async';
 
 import 'package:fl_lib/fl_lib.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:server_box/core/extension/context/locale.dart';
+import 'package:server_box/core/utils/refresh_interval.dart';
+import 'package:server_box/core/utils/version.dart';
+import 'package:server_box/data/model/app/error.dart';
 import 'package:server_box/data/model/server/pve.dart';
 import 'package:server_box/data/model/server/server_private_info.dart';
 import 'package:server_box/data/provider/pve.dart';
-import 'package:server_box/data/res/store.dart';
 import 'package:server_box/view/widget/percent_circle.dart';
-import 'package:server_box/view/widget/two_line_text.dart';
 
-final class PvePage extends StatefulWidget {
-  final ServerPrivateInfo spi;
+final class PvePageArgs {
+  final Spi spi;
 
-  const PvePage({
-    super.key,
-    required this.spi,
-  });
+  const PvePageArgs({required this.spi});
+}
+
+final class PvePage extends ConsumerStatefulWidget {
+  final PvePageArgs args;
+
+  const PvePage({super.key, required this.args});
 
   @override
-  State<PvePage> createState() => _PvePageState();
+  ConsumerState<PvePage> createState() => _PvePageState();
+
+  static const route = AppRouteArg<void, PvePageArgs>(
+    page: PvePage.new,
+    path: '/pve',
+  );
 }
 
 const _kHorziPadding = 11.0;
 
-final class _PvePageState extends State<PvePage> {
-  late final _pve = PveProvider(spi: widget.spi);
+final class _PvePageState extends ConsumerState<PvePage> {
   late MediaQueryData _media;
   Timer? _timer;
+  bool _isPromptingForTfa = false;
+  String? _lastHandledTfaMessage;
+
+  late final _provider = pveProvider(widget.args.spi);
+  late final _notifier = ref.read(_provider.notifier);
+
+  @override
+  void dispose() {
+    super.dispose();
+    _timer?.cancel();
+  }
 
   @override
   void didChangeDependencies() {
@@ -43,59 +63,54 @@ final class _PvePageState extends State<PvePage> {
   }
 
   @override
-  void dispose() {
-    super.dispose();
-    _timer?.cancel();
-    _pve.dispose();
-  }
-
-  @override
   Widget build(BuildContext context) {
+    final pveState = ref.watch(_provider);
+
+    // If there is an error, stop the timer
+    if (pveState.error != null) {
+      _timer?.cancel();
+      final error = pveState.error!;
+      if (error.type == PveErrType.needTfa &&
+          !_isPromptingForTfa &&
+          error.message != _lastHandledTfaMessage) {
+        WidgetsBinding.instance.addPostFrameCallback(
+          (_) => _promptForTfa(error),
+        );
+      }
+    }
+
     return Scaffold(
       appBar: CustomAppBar(
-        title: TwoLineText(up: 'PVE', down: widget.spi.name),
+        title: TwoLineText(up: 'PVE', down: widget.args.spi.name),
         actions: [
-          ValBuilder(
-            listenable: _pve.err,
-            builder: (val) => val == null
-                ? UIs.placeholder
-                : IconBtn(
-                    icon: Icons.refresh,
-                    onTap: () {
-                      _pve.err.value = null;
-                      _pve.list();
-                      _initRefreshTimer();
-                    },
-                  ),
-          ),
+          pveState.error == null
+              ? UIs.placeholder
+              : Btn.icon(
+                  icon: const Icon(Icons.refresh),
+                  onTap: () {
+                    _lastHandledTfaMessage = null;
+                    _notifier.reconnect();
+                    _initRefreshTimer();
+                  },
+                ),
         ],
       ),
-      body: ValBuilder(
-        listenable: _pve.err,
-        builder: (val) {
-          if (val != null) {
-            _timer?.cancel();
-            return Padding(
-              padding: const EdgeInsets.all(13),
-              child: Center(
-                child: Text(val),
-              ),
-            );
-          }
-          return ValBuilder(
-            listenable: _pve.data,
-            builder: (val) {
-              return _buildBody(val);
-            },
-          );
-        },
-      ),
+      body: pveState.error != null
+          ? _buildError(pveState.error!)
+          : _buildBody(pveState.data, pveState.loadingStep),
     );
   }
 
-  Widget _buildBody(PveRes? data) {
+  Widget _buildError(PveErr error) {
+    return Padding(
+      padding: const EdgeInsets.all(13),
+      child: Center(child: Text(error.toString())),
+    );
+  }
+
+  Widget _buildBody(PveRes? data, PveLoadingStep loadingStep) {
     if (data == null) {
-      return UIs.centerLoading;
+      return _buildLoading(loadingStep);
     }
 
     PveResType? lastType;
@@ -142,6 +157,25 @@ final class _PvePageState extends State<PvePage> {
           final PveSdn _ => _buildSdn(item),
         };
       },
+    );
+  }
+
+  Widget _buildLoading(PveLoadingStep step) {
+    final String message = switch (step) {
+      PveLoadingStep.forwarding => l10n.pveLoadingForwarding,
+      PveLoadingStep.loggingIn => l10n.pveLoadingLogin,
+      PveLoadingStep.fetchingData => l10n.pveLoadingData,
+      _ => l10n.pveLoadingConnect,
+    };
+    return Center(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const CircularProgressIndicator(),
+          const SizedBox(height: 17),
+          Text(message, style: UIs.text13Grey),
+        ],
+      ),
     );
   }
 
@@ -222,22 +256,16 @@ final class _PvePageState extends State<PvePage> {
         mainAxisAlignment: MainAxisAlignment.spaceAround,
         children: [
           const SizedBox(width: 15),
-          Text(
-            _wrapNodeName(item),
-            style: UIs.text13Bold,
-          ),
-          Text(
-            '  /  ${item.summary}',
-            style: UIs.text12Grey,
-          ),
+          Text(_wrapNodeName(item), style: UIs.text13Bold),
+          Text('  /  ${item.summary}', style: UIs.text12Grey),
           const Spacer(),
           _buildCtrlBtns(item),
           UIs.width13,
         ],
       ),
       UIs.height7,
-      AvgWidthRow(
-        width: _media.size.width,
+      AvgSize(
+        totalSize: _media.size.width,
         padding: _kHorziPadding * 2 + 26,
         children: [
           PercentCircle(percent: (item.cpu / item.maxcpu) * 100),
@@ -256,7 +284,7 @@ final class _PvePageState extends State<PvePage> {
                 '${l10n.write}:\n${item.diskwrite.bytes2Str}',
                 style: UIs.text11Grey,
                 textAlign: TextAlign.center,
-              )
+              ),
             ],
           ),
           Column(
@@ -273,17 +301,14 @@ final class _PvePageState extends State<PvePage> {
                 '↑:\n${item.netout.bytes2Str}',
                 style: UIs.text11Grey,
                 textAlign: TextAlign.center,
-              )
+              ),
             ],
           ),
         ],
       ),
-      const SizedBox(height: 21)
+      const SizedBox(height: 21),
     ];
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: children,
-    ).cardx;
+    return Column(mainAxisSize: MainAxisSize.min, children: children).cardx;
   }
 
   Widget _buildLxc(PveLxc item) {
@@ -299,22 +324,16 @@ final class _PvePageState extends State<PvePage> {
         mainAxisAlignment: MainAxisAlignment.spaceAround,
         children: [
           const SizedBox(width: 15),
-          Text(
-            _wrapNodeName(item),
-            style: UIs.text13Bold,
-          ),
-          Text(
-            '  /  ${item.summary}',
-            style: UIs.text12Grey,
-          ),
+          Text(_wrapNodeName(item), style: UIs.text13Bold),
+          Text('  /  ${item.summary}', style: UIs.text12Grey),
           const Spacer(),
           _buildCtrlBtns(item),
           UIs.width13,
         ],
       ),
       UIs.height7,
-      AvgWidthRow(
-        width: _media.size.width,
+      AvgSize(
+        totalSize: _media.size.width,
         padding: _kHorziPadding * 2 + 26,
         children: [
           PercentCircle(percent: (item.cpu / item.maxcpu) * 100),
@@ -333,7 +352,7 @@ final class _PvePageState extends State<PvePage> {
                 '${l10n.write}:\n${item.diskwrite.bytes2Str}',
                 style: UIs.text11Grey,
                 textAlign: TextAlign.center,
-              )
+              ),
             ],
           ),
           Column(
@@ -350,17 +369,14 @@ final class _PvePageState extends State<PvePage> {
                 '↑:\n${item.netout.bytes2Str}',
                 style: UIs.text11Grey,
                 textAlign: TextAlign.center,
-              )
+              ),
             ],
           ),
         ],
       ),
-      const SizedBox(height: 21)
+      const SizedBox(height: 21),
     ];
-    return Column(
-      mainAxisSize: MainAxisSize.min,
-      children: children,
-    ).cardx;
+    return Column(mainAxisSize: MainAxisSize.min, children: children).cardx;
   }
 
   Widget _buildStorage(PveStorage item) {
@@ -378,7 +394,7 @@ final class _PvePageState extends State<PvePage> {
             ],
           ),
           UIs.height7,
-          KvRow(k: l10n.content, v: item.content),
+          KvRow(k: libL10n.content, v: item.content),
           KvRow(k: l10n.plugInType, v: item.plugintype),
         ],
       ),
@@ -393,78 +409,164 @@ final class _PvePageState extends State<PvePage> {
   }
 
   Widget _buildCtrlBtns(PveCtrlIface item) {
+    const pad = EdgeInsets.symmetric(horizontal: 7, vertical: 5);
     if (!item.available) {
-      return IconBtn(
-          icon: Icons.play_arrow,
-          color: Colors.grey,
-          onTap: () => _onCtrl(_pve.start, l10n.start, item));
+      return Btn.icon(
+        icon: const Icon(Icons.play_arrow, color: Colors.grey),
+        onTap: () => _onCtrl(
+          libL10n.start,
+          item,
+          () => _notifier.start(item.node, item.id),
+        ),
+      );
     }
     return Row(
       children: [
-        IconBtn(
-            icon: Icons.stop,
-            color: Colors.grey,
-            onTap: () => _onCtrl(_pve.stop, l10n.stop, item)),
-        IconBtn(
-            icon: Icons.refresh,
-            color: Colors.grey,
-            onTap: () => _onCtrl(_pve.reboot, l10n.reboot, item)),
-        IconBtn(
-          icon: Icons.power_off,
-          color: Colors.grey,
-          onTap: () => _onCtrl(_pve.shutdown, l10n.shutdown, item),
+        Btn.icon(
+          icon: const Icon(Icons.stop, color: Colors.grey, size: 20),
+          padding: pad,
+          onTap: () => _onCtrl(
+            libL10n.stop,
+            item,
+            () => _notifier.stop(item.node, item.id),
+          ),
+        ),
+        Btn.icon(
+          icon: const Icon(Icons.refresh, color: Colors.grey, size: 20),
+          padding: pad,
+          onTap: () => _onCtrl(
+            libL10n.reboot,
+            item,
+            () => _notifier.reboot(item.node, item.id),
+          ),
+        ),
+        Btn.icon(
+          icon: const Icon(Icons.power_off, color: Colors.grey, size: 20),
+          padding: pad,
+          onTap: () => _onCtrl(
+            libL10n.shutdown,
+            item,
+            () => _notifier.shutdown(item.node, item.id),
+          ),
         ),
       ],
     );
   }
+}
 
-  void _onCtrl(PveCtrlFunc func, String action, PveCtrlIface item) async {
-    final sure = await context.showRoundDialog<bool>(
-      title: l10n.attention,
-      child: Text(l10n.askContinue('$action ${item.id}')),
-      actions: [
-        TextButton(
-          onPressed: () => context.pop(true),
-          child: Text(l10n.ok, style: UIs.textRed),
+extension on _PvePageState {
+  Future<void> _promptForTfa(PveErr error) async {
+    if (!mounted || _isPromptingForTfa) return;
+    _isPromptingForTfa = true;
+    _lastHandledTfaMessage = error.message;
+    try {
+      final otpController = TextEditingController();
+      final submitted = await context.showRoundDialog<bool>(
+        title: l10n.pveOtpTitle,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(error.message ?? l10n.pveOtpRequired),
+            const SizedBox(height: 13),
+            Input(
+              controller: otpController,
+              label: l10n.pveOtpLabel,
+              hint: '123456',
+              icon: Icons.password,
+              type: TextInputType.number,
+              suggestion: false,
+              autoFocus: true,
+            ),
+          ],
         ),
-      ],
-    );
-    if (sure != true) return;
-    bool? suc;
-    await context.showLoadingDialog(fn: () async {
-      suc = await func(item.node, item.id);
-    });
-    if (suc == true) {
-      context.showSnackBar(l10n.success);
-    } else {
-      context.showSnackBar(l10n.failed);
+        actions: Btnx.cancelOk,
+      );
+      final otp = otpController.text.trim();
+      otpController.dispose();
+
+      if (!mounted || submitted != true) return;
+      if (otp.isEmpty) {
+        context.showSnackBar(l10n.pveOtpRequired);
+        return;
+      }
+
+      final (_, err) = await context.showLoadingDialog(
+        fn: () async {
+          await _notifier.submitTfaCode(otp);
+          return true;
+        },
+      );
+      if (!mounted) return;
+      if (err != null) {
+        _lastHandledTfaMessage = null;
+        return;
+      }
+
+      _lastHandledTfaMessage = null;
+      _initRefreshTimer();
+    } finally {
+      _isPromptingForTfa = false;
     }
   }
 
-  /// Add PveNode if [PveProvider.onlyOneNode] is false
+  void _onCtrl(
+    String action,
+    PveCtrlIface item,
+    Future<bool> Function() func,
+  ) async {
+    final sure = await context.showRoundDialog<bool>(
+      title: libL10n.attention,
+      child: Text(libL10n.askContinue('$action ${item.id}')),
+      actions: Btnx.okReds,
+    );
+    if (sure != true) return;
+
+    final (suc, err) = await context.showLoadingDialog(fn: func);
+    if (suc == true) {
+      context.showSnackBar(libL10n.success);
+    } else {
+      context.showSnackBar(err?.toString() ?? libL10n.fail);
+    }
+  }
+
+  /// Add PveNode if only one node exists
   String _wrapNodeName(PveCtrlIface item) {
-    if (_pve.onlyOneNode) {
+    final pveState = ref.read(_provider);
+    if (pveState.data?.onlyOneNode ?? false) {
       return item.name;
     }
     return '${item.node} / ${item.name}';
   }
 
   void _initRefreshTimer() {
-    _timer = Timer.periodic(
-        Duration(seconds: Stores.setting.serverStatusUpdateInterval.fetch()),
-        (_) {
+    _timer?.cancel();
+    final duration = serverStatusRefreshInterval();
+    if (duration == null) return;
+    _timer = Timer.periodic(duration, (_) {
       if (mounted) {
-        _pve.list();
+        _notifier.list();
       }
     });
   }
 
   void _afterInit() async {
-    await _pve.connected.future;
-    if (_pve.release != null && _pve.release!.compareTo('8.0') < 0) {
-      if (mounted) {
-        context.showSnackBar(l10n.pveVersionLow);
+    // Wait for the PVE state to be connected
+    while (mounted) {
+      final pveState = ref.read(_provider);
+      if (pveState.isConnected) {
+        final release = pveState.release;
+        if (release != null && isVersionLessThan(release, const [8, 0])) {
+          if (mounted) {
+            context.showSnackBar(l10n.pveVersionLow);
+          }
+        }
+        break;
       }
+      if (pveState.error != null) {
+        break; // Skip if there is an error
+      }
+      await Future.delayed(const Duration(milliseconds: 100));
     }
   }
 }

@@ -1,144 +1,166 @@
-import 'package:hive_flutter/hive_flutter.dart';
+import 'dart:convert';
+
+import 'package:fl_lib/fl_lib.dart';
+import 'package:freezed_annotation/freezed_annotation.dart';
+import 'package:server_box/data/model/app/error.dart';
 import 'package:server_box/data/model/server/custom.dart';
-import 'package:server_box/data/model/server/server.dart';
+import 'package:server_box/data/model/server/system.dart';
 import 'package:server_box/data/model/server/wol_cfg.dart';
-import 'package:server_box/data/res/provider.dart';
+import 'package:server_box/data/store/server.dart';
 
-import '../app/error.dart';
-
+part 'server_private_info.freezed.dart';
 part 'server_private_info.g.dart';
 
-/// In former version, it's called `ServerPrivateInfo`.
-@HiveType(typeId: 3)
-class ServerPrivateInfo {
-  @HiveField(0)
-  final String name;
-  @HiveField(1)
-  final String ip;
-  @HiveField(2)
-  final int port;
-  @HiveField(3)
-  final String user;
-  @HiveField(4)
-  final String? pwd;
+enum SpiValidationError { jumpServerAndProxyCommandConflict }
 
-  /// [id] of private key
-  @HiveField(5)
-  final String? keyId;
-  @HiveField(6)
-  final List<String>? tags;
-  @HiveField(7)
-  final String? alterUrl;
-  @HiveField(8)
-  final bool? autoConnect;
+class SpiValidationException implements Exception {
+  const SpiValidationException(this.error);
 
-  /// [id] of the jump server
-  @HiveField(9)
-  final String? jumpId;
+  final SpiValidationError error;
 
-  @HiveField(10)
-  final ServerCustom? custom;
+  @override
+  String toString() => 'SpiValidationException($error)';
+}
 
-  @HiveField(11)
-  final WakeOnLanCfg? wolCfg;
+/// In the first version, it's called `ServerPrivateInfo` which was designed to
+/// store the private information of a server.
+///
+/// Some params named as `spi` in the codebase which is the abbreviation of `ServerPrivateInfo`.
+///
+/// Nowaday, more fields are added to this class, and it's renamed to `Spi`.
+@freezed
+abstract class Spi with _$Spi {
+  const Spi._();
 
-  final String id;
+  @JsonSerializable(includeIfNull: false)
+  const factory Spi({
+    required String name,
+    required String ip,
+    required int port,
+    required String user,
+    String? pwd,
 
-  const ServerPrivateInfo({
-    required this.name,
-    required this.ip,
-    required this.port,
-    required this.user,
-    required this.pwd,
-    this.keyId,
-    this.tags,
-    this.alterUrl,
-    this.autoConnect,
-    this.jumpId,
-    this.custom,
-    this.wolCfg,
-  }) : id = '$user@$ip:$port';
+    /// [id] of private key
+    @JsonKey(name: 'pubKeyId') String? keyId,
+    List<String>? tags,
+    String? alterUrl,
+    @Default(true) bool autoConnect,
 
-  static ServerPrivateInfo fromJson(Map<String, dynamic> json) {
-    final ip = json["ip"] as String? ?? '';
-    final port = json["port"] as int? ?? 22;
-    final user = json["user"] as String? ?? 'root';
-    final name = json["name"] as String? ?? '';
-    final pwd = json["pwd"] as String? ?? json["authorization"] as String?;
-    final keyId = json["pubKeyId"] as String?;
-    final tags = (json["tags"] as List?)?.cast<String>();
-    final alterUrl = json["alterUrl"] as String?;
-    final autoConnect = json["autoConnect"] as bool?;
-    final jumpId = json["jumpId"] as String?;
-    final custom = json["customCmd"] == null
-        ? null
-        : ServerCustom.fromJson(json["custom"].cast<String, dynamic>());
-    final wolCfg = json["wolCfg"] == null
-        ? null
-        : WakeOnLanCfg.fromJson(json["wolCfg"].cast<String, dynamic>());
+    /// [id] of the first jump server.
+    ///
+    /// Kept for compatibility with old storage and imports. New code should
+    /// read [resolvedJumpIds] so failover candidates are included.
+    String? jumpId,
 
-    return ServerPrivateInfo(
-      name: name,
-      ip: ip,
-      port: port,
-      user: user,
-      pwd: pwd,
-      keyId: keyId,
-      tags: tags,
-      alterUrl: alterUrl,
-      autoConnect: autoConnect,
-      jumpId: jumpId,
-      custom: custom,
-      wolCfg: wolCfg,
-    );
+    /// Ordered jump-server candidates. At most the first two are used.
+    List<String>? jumpIds,
+    String? proxyCommand,
+    ServerCustom? custom,
+    WakeOnLanCfg? wolCfg,
+
+    /// It only applies to SSH terminal.
+    Map<String, String>? envs,
+    @Default('') @JsonKey(fromJson: Spi.parseId) String id,
+
+    /// Custom system type (unix or windows). If set, skip auto-detection.
+    @JsonKey(includeIfNull: false) SystemType? customSystemType,
+
+    /// Disabled command types for this server
+    @JsonKey(includeIfNull: false) List<String>? disabledCmdTypes,
+  }) = _Spi;
+
+  factory Spi.fromJson(Map<String, dynamic> json) => _$SpiFromJson(json);
+
+  @override
+  String toString() => 'Spi<$oldId>';
+
+  /// Parse the [id], if it's null or empty, generate a new one.
+  static String parseId(Object? id) {
+    if (id == null || id is! String || id.isEmpty) return ShortId.generate();
+    return id;
+  }
+}
+
+extension Spix on Spi {
+  List<String> get resolvedJumpIds {
+    final ids = <String>[];
+    void add(String? id) {
+      if (id == null || id.isEmpty || ids.contains(id)) return;
+      ids.add(id);
+    }
+
+    for (final id in jumpIds ?? const <String>[]) {
+      add(id);
+      if (ids.length >= 2) break;
+    }
+    if (ids.isEmpty) add(jumpId);
+    return ids;
   }
 
-  Map<String, dynamic> toJson() {
-    final Map<String, dynamic> data = <String, dynamic>{};
-    data["name"] = name;
-    data["ip"] = ip;
-    data["port"] = port;
-    data["user"] = user;
-    if (pwd != null) {
-      data["pwd"] = pwd;
-    }
-    if (keyId != null) {
-      data["pubKeyId"] = keyId;
-    }
-    if (tags != null) {
-      data["tags"] = tags;
-    }
-    if (alterUrl != null) {
-      data["alterUrl"] = alterUrl;
-    }
-    if (autoConnect != null) {
-      data["autoConnect"] = autoConnect;
-    }
-    if (jumpId != null) {
-      data["jumpId"] = jumpId;
-    }
-    if (custom != null) {
-      data["custom"] = custom?.toJson();
-    }
-    if (wolCfg != null) {
-      data["wolCfg"] = wolCfg?.toJson();
-    }
-    return data;
+  String? get firstJumpId {
+    final ids = resolvedJumpIds;
+    return ids.isEmpty ? null : ids.first;
   }
 
-  Server? get server => Pros.server.pick(spi: this);
-  Server? get jumpServer => Pros.server.pick(id: jumpId);
+  SpiValidationError? validate() {
+    final hasJumpServer = resolvedJumpIds.isNotEmpty;
+    final hasProxyCommand =
+        proxyCommand != null && proxyCommand!.trim().isNotEmpty;
+    if (hasJumpServer && hasProxyCommand) {
+      return SpiValidationError.jumpServerAndProxyCommandConflict;
+    }
+    return null;
+  }
 
-  bool shouldReconnect(ServerPrivateInfo old) {
-    return id != old.id ||
-        pwd != old.pwd ||
-        keyId != old.keyId ||
+  void validateOrThrow() {
+    final validationError = validate();
+    if (validationError == null) return;
+    throw SpiValidationException(validationError);
+  }
+
+  /// After upgrading to >= 1155, this field is only recommended to be used
+  /// for displaying the server name.
+  String get oldId => '$user@$ip:$port';
+
+  /// Save the [Spi] to the local storage.
+  void save() => ServerStore.instance.put(this);
+
+  /// Migrate the [oldId] to the new generated [id] by [ShortId.generate].
+  ///
+  /// Returns:
+  /// - `null` if the [id] is not empty.
+  /// - The new [id] if the [id] is empty.
+  String? migrateId() {
+    if (id.isNotEmpty) return null;
+    ServerStore.instance.delete(oldId);
+    final newSpi = copyWith(id: ShortId.generate());
+    newSpi.save();
+    return newSpi.id;
+  }
+
+  /// Json encode to string.
+  String toJsonString() => json.encode(toJson());
+
+  /// Returns true if the connection info is the same as [other].
+  bool isSameAs(Spi other) {
+    return user == other.user &&
+        ip == other.ip &&
+        port == other.port &&
+        pwd == other.pwd &&
+        keyId == other.keyId &&
+        _sameStringList(resolvedJumpIds, other.resolvedJumpIds) &&
+        proxyCommand == other.proxyCommand;
+  }
+
+  /// Returns true if the connection should be re-established.
+  bool shouldReconnect(Spi old) {
+    return !isSameAs(old) ||
         alterUrl != old.alterUrl ||
-        jumpId != old.jumpId ||
         custom?.cmds != old.custom?.cmds;
   }
 
-  _IpPort fromStringUrl() {
+  /// Parse the [alterUrl] to (ip, user, port).
+  (String ip, String usr, int port) parseAlterUrl() {
     if (alterUrl == null) {
       throw SSHErr(type: SSHErrType.connect, message: 'alterUrl is null');
     }
@@ -146,27 +168,51 @@ class ServerPrivateInfo {
     if (splited.length != 2) {
       throw SSHErr(type: SSHErrType.connect, message: 'alterUrl no @');
     }
-    final splited2 = splited[1].split(':');
-    if (splited2.length != 2) {
+    final usr = splited[0];
+    final idx = splited[1].lastIndexOf(':');
+    if (idx == -1) {
       throw SSHErr(type: SSHErrType.connect, message: 'alterUrl no :');
     }
-    final ip_ = splited2[0];
-    final port_ = int.tryParse(splited2[1]) ?? 22;
-    if (port <= 0 || port > 65535) {
+    final ip_ = splited[1].substring(0, idx);
+    final port_ = int.tryParse(splited[1].substring(idx + 1));
+    if (port_ == null || port_ <= 0 || port_ > 65535) {
       throw SSHErr(type: SSHErrType.connect, message: 'alterUrl port error');
     }
-    return _IpPort(ip_, port_);
+    return (ip_, usr, port_);
   }
 
-  @override
-  String toString() {
-    return id;
-  }
+  /// Just for showing the struct of the class.
+  ///
+  /// **NOT** the default value.
+  static final example = Spi(
+    name: 'name',
+    ip: 'ip',
+    port: 22,
+    user: 'root',
+    pwd: 'pwd',
+    keyId: 'private_key_id',
+    tags: ['tag1', 'tag2'],
+    alterUrl: 'user@ip:port',
+    autoConnect: true,
+    proxyCommand: 'socat - PROXY:proxy.example.com:%h:%p,proxyport=8080',
+    custom: ServerCustom(
+      pveAddr: 'http://localhost:8006',
+      pveIgnoreCert: false,
+      cmds: {'echo': 'echo hello'},
+      preferTempDev: 'nvme-pci-0400',
+      logoUrl: 'https://example.com/logo.png',
+    ),
+    id: 'id',
+  );
+
+  /// Returns true if the user is 'root'.
+  bool get isRoot => user == 'root';
 }
 
-class _IpPort {
-  final String ip;
-  final int port;
-
-  _IpPort(this.ip, this.port);
+bool _sameStringList(List<String> a, List<String> b) {
+  if (a.length != b.length) return false;
+  for (var i = 0; i < a.length; i++) {
+    if (a[i] != b[i]) return false;
+  }
+  return true;
 }

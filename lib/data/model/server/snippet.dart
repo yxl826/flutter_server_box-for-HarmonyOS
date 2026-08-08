@@ -1,80 +1,53 @@
 import 'dart:async';
 
 import 'package:fl_lib/fl_lib.dart';
-import 'package:hive_flutter/hive_flutter.dart';
+import 'package:freezed_annotation/freezed_annotation.dart';
 import 'package:server_box/data/model/server/server_private_info.dart';
 import 'package:xterm/core.dart';
 
-import '../app/tag_pickable.dart';
-
 part 'snippet.g.dart';
+part 'snippet.freezed.dart';
 
-@HiveType(typeId: 2)
-class Snippet implements TagPickable {
-  @HiveField(0)
-  final String name;
-  @HiveField(1)
-  final String script;
-  @HiveField(2)
-  final List<String>? tags;
-  @HiveField(3)
-  final String? note;
+@freezed
+abstract class Snippet with _$Snippet {
+  const factory Snippet({
+    required String name,
+    required String script,
+    List<String>? tags,
+    String? note,
 
-  /// List of server id that this snippet should be auto run on
-  @HiveField(4)
-  final List<String>? autoRunOn;
+    /// List of server id that this snippet should be auto run on
+    List<String>? autoRunOn,
+  }) = _Snippet;
 
-  const Snippet({
-    required this.name,
-    required this.script,
-    this.tags,
-    this.note,
-    this.autoRunOn,
-  });
+  factory Snippet.fromJson(Map<String, dynamic> json) =>
+      _$SnippetFromJson(json);
 
-  Snippet.fromJson(Map<String, dynamic> json)
-      : name = json['name'].toString(),
-        script = json['script'].toString(),
-        tags = json['tags']?.cast<String>(),
-        note = json['note']?.toString(),
-        autoRunOn = json['autoRunOn']?.cast<String>();
+  static const example = Snippet(
+    name: 'example',
+    script: 'echo hello',
+    tags: ['tag'],
+    note: 'note',
+    autoRunOn: ['server_id'],
+  );
+}
 
-  Map<String, dynamic> toJson() {
-    final data = <String, dynamic>{};
-    data['name'] = name;
-    data['script'] = script;
-    data['tags'] = tags;
-    data['note'] = note;
-    data['autoRunOn'] = autoRunOn;
-    return data;
-  }
-
-  @override
-  bool containsTag(String tag) {
-    return tags?.contains(tag) ?? false;
-  }
-
-  @override
-  String get tagName => name;
-
+extension SnippetX on Snippet {
   static final fmtFinder = RegExp(r'\$\{[^{}]+\}');
 
-  String fmtWithSpi(ServerPrivateInfo spi) {
-    return script.replaceAllMapped(
-      fmtFinder,
-      (match) {
-        final key = match.group(0);
-        final func = fmtArgs[key];
-        if (func != null) return func(spi);
-        // If not found, return the original content for further processing
-        return key ?? '';
-      },
-    );
+  String fmtWithSpi(Spi spi) {
+    return script.replaceAllMapped(fmtFinder, (match) {
+      final key = match.group(0);
+      final func = fmtArgs[key];
+      if (func != null) return func(spi);
+      // If not found, return the original content for further processing
+      return key ?? '';
+    });
   }
 
   Future<void> runInTerm(
     Terminal terminal,
-    ServerPrivateInfo spi, {
+    Spi spi, {
     bool autoEnter = false,
   }) async {
     final argsFmted = fmtWithSpi(spi);
@@ -119,11 +92,21 @@ class Snippet implements TagPickable {
       if (special != null) {
         final raw = key.substring(special.key.length + 1, key.length - 1);
         await special.value((term: terminal, raw: raw));
+      } else {
+        // Term keys
+        final termKey = _find(fmtTermKeys, key);
+        if (termKey != null) {
+          await _doTermKeys(terminal, termKey, key);
+        } else {
+          // Normal input
+          terminal.textInput(key);
+        }
       }
 
-      // Term keys
-      final termKey = _find(fmtTermKeys, key);
-      if (termKey != null) await _doTermKeys(terminal, termKey, key);
+      // Text between this and next match
+      if (idx < starts.length - 1) {
+        terminal.textInput(argsFmted.substring(end, starts[idx + 1]));
+      }
     }
 
     // End term input
@@ -139,16 +122,13 @@ class Snippet implements TagPickable {
     MapEntry<String, TerminalKey> termKey,
     String key,
   ) async {
-    if (termKey.value == TerminalKey.enter) {
-      terminal.keyInput(TerminalKey.enter);
-      return;
-    }
-
     final ctrlAlt = switch (termKey.value) {
       TerminalKey.control => (ctrl: true, alt: false),
       TerminalKey.alt => (ctrl: false, alt: true),
       _ => (ctrl: false, alt: false),
     };
+
+    if (!key.contains('+')) return;
 
     // `${ctrl+ad}` -> `ctrla + d`
     final chars = key.substring(termKey.key.length + 1, key.length - 1);
@@ -170,12 +150,12 @@ class Snippet implements TagPickable {
   }
 
   static final fmtArgs = {
-    r'${host}': (ServerPrivateInfo spi) => spi.ip,
-    r'${port}': (ServerPrivateInfo spi) => spi.port.toString(),
-    r'${user}': (ServerPrivateInfo spi) => spi.user,
-    r'${pwd}': (ServerPrivateInfo spi) => spi.pwd ?? '',
-    r'${id}': (ServerPrivateInfo spi) => spi.id,
-    r'${name}': (ServerPrivateInfo spi) => spi.name,
+    r'${host}': (Spi spi) => spi.ip,
+    r'${port}': (Spi spi) => spi.port.toString(),
+    r'${user}': (Spi spi) => spi.user,
+    r'${pwd}': (Spi spi) => spi.pwd ?? '',
+    r'${id}': (Spi spi) => spi.id,
+    r'${name}': (Spi spi) => spi.name,
   };
 
   /// r'${ctrl+ad}' -> TerminalKey.control, a, d
@@ -190,11 +170,7 @@ class SnippetResult {
   final String result;
   final Duration time;
 
-  SnippetResult({
-    required this.dest,
-    required this.result,
-    required this.time,
-  });
+  SnippetResult({required this.dest, required this.result, required this.time});
 }
 
 typedef SnippetFuncCtx = ({Terminal term, String raw});
@@ -204,11 +180,6 @@ abstract final class SnippetFuncs {
     // `${sleep 3}` -> sleep 3 seconds
     r'${sleep': SnippetFuncs.sleep,
     r'${enter': SnippetFuncs.enter,
-  };
-
-  static const help = {
-    'sleep': 'Sleep for a few seconds',
-    'enter': 'Enter a few times',
   };
 
   static FutureOr<void> sleep(SnippetFuncCtx ctx) async {

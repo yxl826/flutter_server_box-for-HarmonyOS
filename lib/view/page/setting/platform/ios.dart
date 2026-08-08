@@ -1,38 +1,53 @@
 import 'package:fl_lib/fl_lib.dart';
 import 'package:flutter/material.dart';
 import 'package:server_box/core/extension/context/locale.dart';
-import 'package:server_box/core/route.dart';
 import 'package:server_box/core/utils/misc.dart';
 import 'package:server_box/data/res/store.dart';
-import 'package:server_box/view/page/setting/platform/platform_pub.dart';
 import 'package:watch_connectivity/watch_connectivity.dart';
 
-class IOSSettingsPage extends StatefulWidget {
-  const IOSSettingsPage({super.key});
+class IosSettingsPage extends StatefulWidget {
+  const IosSettingsPage({super.key});
 
   @override
-  State<IOSSettingsPage> createState() => _IOSSettingsPageState();
+  State<IosSettingsPage> createState() => _IosSettingsPageState();
+
+  static const route = AppRouteNoArg(
+    page: IosSettingsPage.new,
+    path: '/settings/ios',
+  );
 }
 
-class _IOSSettingsPageState extends State<IOSSettingsPage> {
+class _IosSettingsPageState extends State<IosSettingsPage> {
   final _pushToken = ValueNotifier<String?>(null);
-
   final wc = WatchConnectivity();
+  late final _watchContextFuture = _loadWatchContext();
+  late final _pushTokenFuture = getToken();
+
+  void _showCopyResult(bool success) {
+    context.showSnackBar(success ? libL10n.success : libL10n.fail);
+  }
+
+  Future<Map<String, dynamic>?> _loadWatchContext() async {
+    if (!await wc.isPaired) return null;
+    return await wc.applicationContext;
+  }
+
+  @override
+  void dispose() {
+    super.dispose();
+    _pushToken.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: const CustomAppBar(
-        title: Text('iOS'),
-      ),
+      appBar: CustomAppBar(title: const Text('iOS')),
       body: ListView(
         padding: const EdgeInsets.symmetric(horizontal: 17),
         children: [
           _buildPushToken(),
           _buildAutoUpdateHomeWidget(),
           _buildWatchApp(),
-          if (BioAuth.isPlatformSupported)
-            PlatformPublicSettings.buildBioAuth(),
         ].map((e) => CardX(child: e)).toList(),
       ),
     );
@@ -46,22 +61,23 @@ class _IOSSettingsPageState extends State<IOSSettingsPage> {
         alignment: Alignment.centerRight,
         padding: EdgeInsets.zero,
         onPressed: () {
-          if (_pushToken.value != null) {
-            Pfs.copy(_pushToken.value!);
-            context.showSnackBar(l10n.success);
+          final val = _pushToken.value;
+          if (val != null) {
+            Pfs.copy(val);
+            _showCopyResult(true);
           } else {
-            context.showSnackBar(l10n.getPushTokenFailed);
+            _showCopyResult(false);
           }
         },
       ),
       subtitle: FutureWidget<String?>(
-        future: getToken(),
-        loading: Text(l10n.gettingToken),
-        error: (error, trace) => Text('${l10n.error}: $error'),
+        future: _pushTokenFuture,
+        loading: const Text('...'),
+        error: (error, trace) => Text('${libL10n.error}: $error'),
         success: (text) {
           _pushToken.value = text;
           return Text(
-            text ?? l10n.nullToken,
+            text ?? 'null',
             style: UIs.textGrey,
             overflow: TextOverflow.ellipsis,
             maxLines: 1,
@@ -81,16 +97,13 @@ class _IOSSettingsPageState extends State<IOSSettingsPage> {
 
   Widget _buildWatchApp() {
     return FutureWidget(
-      future: () async {
-        if (!await wc.isPaired) return null;
-        return await wc.applicationContext;
-      }(),
+      future: _watchContextFuture,
       loading: UIs.centerLoading,
       error: (e, trace) {
         Loggers.app.warning('WatchOS error', e, trace);
         return ListTile(
           title: const Text('Watch app'),
-          subtitle: Text('${l10n.error}: $e', style: UIs.textGrey),
+          subtitle: Text('${libL10n.error}: $e', style: UIs.textGrey),
         );
       },
       success: (ctx) {
@@ -110,17 +123,32 @@ class _IOSSettingsPageState extends State<IOSSettingsPage> {
   }
 
   void _onTapWatchApp(Map<String, dynamic> map) async {
-    final urls = Map<String, String>.from(map['urls'] as Map? ?? {});
-    final result = await AppRoutes.kvEditor(data: urls).go(context);
-    if (result == null || result is! Map<String, String>) return;
+    final cfgs = List<String>.from(map['urls'] as List? ?? []);
+    final result = await JsonListEditor.route.go(
+      context,
+      JsonListEditorArgs(data: cfgs),
+    );
+    if (result == null) return;
 
-    try {
-      await context.showLoadingDialog(fn: () async {
-        await wc.updateApplicationContext({'urls': result});
-      });
-    } catch (e, s) {
-      context.showErrDialog(e: e, s: s, operation: 'Watch Context');
-      Loggers.app.warning('Update watch config failed', e, s);
+    final (_, err) = await context.showLoadingDialog(
+      fn: () async {
+        final data = {'urls': result};
+        // Try realtime update (app must be running foreground).
+        try {
+          if (await wc.isReachable) {
+            await wc.sendMessage(data);
+            return;
+          }
+        } catch (e) {
+          Loggers.app.warning('Failed to send message to watch', e);
+        }
+
+        // fallback
+        await wc.updateApplicationContext(data);
+      },
+    );
+    if (err == null) {
+      _showCopyResult(true);
     }
   }
 }

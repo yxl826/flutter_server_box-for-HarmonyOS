@@ -1,34 +1,70 @@
-import 'dart:async';
-
-import 'package:fl_lib/fl_lib.dart';
-import 'package:server_box/data/res/store.dart';
-
-import '../../../core/utils/server.dart';
-import '../server/server_private_info.dart';
-import 'worker.dart';
+part of 'worker.dart';
 
 class SftpReq {
-  final ServerPrivateInfo spi;
+  final Spi spi;
   final String remotePath;
   final String localPath;
   final SftpReqType type;
   String? privateKey;
-  ServerPrivateInfo? jumpSpi;
+  Spi? jumpSpi;
   String? jumpPrivateKey;
+  Map<String, Spi>? jumpSpisById;
+  Map<String, String>? privateKeysByKeyId;
+  Map<String, String>? knownHostFingerprints;
+  late final int timeoutSeconds;
 
-  SftpReq(
-    this.spi,
-    this.remotePath,
-    this.localPath,
-    this.type,
-  ) {
+  SftpReq(this.spi, this.remotePath, this.localPath, this.type) {
+    timeoutSeconds = Stores.setting.timeout.fetch();
+    privateKeysByKeyId = {};
+
     final keyId = spi.keyId;
     if (keyId != null) {
       privateKey = getPrivateKey(keyId);
+      privateKeysByKeyId![keyId] = privateKey!;
     }
-    if (spi.jumpId != null) {
-      jumpSpi = Stores.server.box.get(spi.jumpId);
-      jumpPrivateKey = Stores.key.get(jumpSpi?.keyId)?.key;
+
+    final allServers = {
+      for (final server in Stores.server.fetch()) server.id: server,
+    };
+    jumpSpisById = collectJumpServers(spi: spi, serversById: allServers);
+
+    final firstJumpId = spi.firstJumpId;
+    if (firstJumpId != null) {
+      jumpSpi = jumpSpisById?[firstJumpId];
+      jumpPrivateKey = Stores.key.fetchOne(jumpSpi?.keyId)?.key;
+      if (jumpSpi?.keyId case final jumpKeyId?) {
+        if (jumpPrivateKey != null) {
+          privateKeysByKeyId![jumpKeyId] = jumpPrivateKey!;
+        }
+      }
+    }
+
+    for (final jump in jumpSpisById?.values ?? const <Spi>[]) {
+      final jumpKeyId = jump.keyId;
+      if (jumpKeyId == null || privateKeysByKeyId!.containsKey(jumpKeyId)) {
+        continue;
+      }
+      final key = Stores.key.fetchOne(jumpKeyId)?.key;
+      if (key == null) {
+        continue;
+      }
+      privateKeysByKeyId![jumpKeyId] = key;
+    }
+
+    if (jumpSpisById != null && jumpSpisById!.isEmpty) {
+      jumpSpisById = null;
+    }
+    if (privateKeysByKeyId != null && privateKeysByKeyId!.isEmpty) {
+      privateKeysByKeyId = null;
+    }
+
+    try {
+      knownHostFingerprints = Map<String, String>.from(
+        Stores.setting.sshKnownHostFingerprints.get(),
+      );
+    } catch (e, s) {
+      Loggers.app.warning('Failed to load SSH known host fingerprints', e, s);
+      knownHostFingerprints = null;
     }
   }
 }
@@ -42,7 +78,7 @@ class SftpReqStatus {
   late SftpWorker worker;
   final Completer? completer;
 
-  String get fileName => req.localPath.split('/').last;
+  String get fileName => req.localPath.split(Pfs.seperator).last;
 
   // status of the download
   double? progress;
@@ -56,10 +92,7 @@ class SftpReqStatus {
     required this.notifyListeners,
     this.completer,
   }) : id = DateTime.now().microsecondsSinceEpoch {
-    worker = SftpWorker(
-      onNotify: onNotify,
-      req: req,
-    )..init();
+    worker = SftpWorker(onNotify: onNotify, req: req)..init();
   }
 
   @override
@@ -69,9 +102,8 @@ class SftpReqStatus {
   int get hashCode => id ^ super.hashCode;
 
   void dispose() {
-    // ignore: deprecated_member_use_from_same_package
-    worker.dispose();
-    completer?.complete();
+    worker._dispose();
+    completer?.complete(true);
   }
 
   void onNotify(dynamic event) {

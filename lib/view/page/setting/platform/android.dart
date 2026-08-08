@@ -4,7 +4,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'package:server_box/core/extension/context/locale.dart';
 import 'package:server_box/core/route.dart';
 import 'package:server_box/data/res/store.dart';
-import 'package:server_box/view/page/setting/platform/platform_pub.dart';
 import 'package:watch_connectivity/watch_connectivity.dart';
 
 class AndroidSettingsPage extends StatefulWidget {
@@ -35,8 +34,6 @@ class _AndroidSettingsPageState extends State<AndroidSettingsPage> {
         children: [
           _buildBgRun(),
           _buildAndroidWidgetSharedPreference(),
-          if (BioAuth.isPlatformSupported)
-            PlatformPublicSettings.buildBioAuth(),
         ].map((e) => CardX(child: e)).toList(),
       ),
     );

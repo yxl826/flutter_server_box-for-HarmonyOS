@@ -6,25 +6,24 @@ enum PveResType {
   qemu,
   node,
   storage,
-  sdn,
-  ;
+  sdn;
 
   static PveResType? fromString(String type) => switch (type.toLowerCase()) {
-        'lxc' => PveResType.lxc,
-        'qemu' => PveResType.qemu,
-        'node' => PveResType.node,
-        'storage' => PveResType.storage,
-        'sdn' => PveResType.sdn,
-        _ => null,
-      };
+    'lxc' => PveResType.lxc,
+    'qemu' => PveResType.qemu,
+    'node' => PveResType.node,
+    'storage' => PveResType.storage,
+    'sdn' => PveResType.sdn,
+    _ => null,
+  };
 
   String get toStr => switch (this) {
-        PveResType.node => l10n.node,
-        PveResType.qemu => 'QEMU',
-        PveResType.lxc => 'LXC',
-        PveResType.storage => l10n.storage,
-        PveResType.sdn => 'SDN',
-      };
+    PveResType.node => libL10n.node,
+    PveResType.qemu => 'QEMU',
+    PveResType.lxc => 'LXC',
+    PveResType.storage => libL10n.storage,
+    PveResType.sdn => 'SDN',
+  };
 }
 
 sealed class PveResIface {
@@ -132,7 +131,7 @@ final class PveLxc extends PveResIface implements PveCtrlIface {
     if (available) {
       return uptime.secondsToDuration().toAgoStr;
     }
-    return l10n.stopped;
+    return libL10n.stopped;
   }
 }
 
@@ -210,7 +209,7 @@ final class PveQemu extends PveResIface implements PveCtrlIface {
     if (available) {
       return uptime.secondsToDuration().toAgoStr;
     }
-    return l10n.stopped;
+    return libL10n.stopped;
   }
 }
 
@@ -260,7 +259,7 @@ final class PveNode extends PveResIface {
     if (isRunning) {
       return uptime.secondsToDuration().toAgoStr;
     }
-    return l10n.stopped;
+    return libL10n.stopped;
   }
 }
 
@@ -294,6 +293,10 @@ final class PveStorage extends PveResIface implements PveCtrlIface {
   });
 
   static PveStorage fromJson(Map<String, dynamic> json) {
+    final rawContent = json['content'] as String?;
+    final contentParts = rawContent?.split(',');
+    contentParts?.sort();
+    final content = contentParts?.join(',') ?? rawContent ?? '';
     return PveStorage(
       id: json['id'],
       type: PveResType.storage,
@@ -301,7 +304,7 @@ final class PveStorage extends PveResIface implements PveCtrlIface {
       node: json['node'],
       status: json['status'],
       plugintype: json['plugintype'],
-      content: json['content'],
+      content: content,
       shared: json['shared'],
       disk: json['disk'],
       maxdisk: json['maxdisk'],
@@ -317,9 +320,9 @@ final class PveStorage extends PveResIface implements PveCtrlIface {
   @override
   String get summary {
     if (available) {
-      return '${l10n.used}: ${disk.bytes2Str} / ${l10n.total}: ${maxdisk.bytes2Str}';
+      return '${l10n.used}: ${disk.bytes2Str} / ${libL10n.total}: ${maxdisk.bytes2Str}';
     }
-    return l10n.notAvailable;
+    return libL10n.notAvailable;
   }
 }
 
@@ -334,13 +337,7 @@ final class PveSdn extends PveResIface implements PveCtrlIface {
   @override
   final String status;
 
-  PveSdn({
-    required this.id,
-    required this.type,
-    required this.sdn,
-    required this.node,
-    required this.status,
-  });
+  PveSdn({required this.id, required this.type, required this.sdn, required this.node, required this.status});
 
   static PveSdn fromJson(Map<String, dynamic> json) {
     return PveSdn(
@@ -359,7 +356,7 @@ final class PveSdn extends PveResIface implements PveCtrlIface {
   String get name => sdn;
 
   @override
-  String get summary => available ? status : l10n.notAvailable;
+  String get summary => available ? status : libL10n.notAvailable;
 }
 
 final class PveRes {
@@ -379,8 +376,7 @@ final class PveRes {
 
   bool get onlyOneNode => nodes.length == 1;
 
-  int get length =>
-      qemus.length + lxcs.length + nodes.length + storages.length + sdns.length;
+  int get length => qemus.length + lxcs.length + nodes.length + storages.length + sdns.length;
 
   PveResIface operator [](int index) {
     if (index < nodes.length) {
@@ -432,29 +428,13 @@ final class PveRes {
     }
 
     if (old != null) {
-      qemus.reorder(
-          order: old.qemus.map((e) => e.id).toList(),
-          finder: (e, s) => e.id == s);
-      lxcs.reorder(
-          order: old.lxcs.map((e) => e.id).toList(),
-          finder: (e, s) => e.id == s);
-      nodes.reorder(
-          order: old.nodes.map((e) => e.id).toList(),
-          finder: (e, s) => e.id == s);
-      storages.reorder(
-          order: old.storages.map((e) => e.id).toList(),
-          finder: (e, s) => e.id == s);
-      sdns.reorder(
-          order: old.sdns.map((e) => e.id).toList(),
-          finder: (e, s) => e.id == s);
+      qemus.reorder(order: old.qemus.map((e) => e.id).toList(), finder: (e, s) => e.id == s);
+      lxcs.reorder(order: old.lxcs.map((e) => e.id).toList(), finder: (e, s) => e.id == s);
+      nodes.reorder(order: old.nodes.map((e) => e.id).toList(), finder: (e, s) => e.id == s);
+      storages.reorder(order: old.storages.map((e) => e.id).toList(), finder: (e, s) => e.id == s);
+      sdns.reorder(order: old.sdns.map((e) => e.id).toList(), finder: (e, s) => e.id == s);
     }
 
-    return PveRes(
-      qemus: qemus,
-      lxcs: lxcs,
-      nodes: nodes,
-      storages: storages,
-      sdns: sdns,
-    );
+    return PveRes(qemus: qemus, lxcs: lxcs, nodes: nodes, storages: storages, sdns: sdns);
   }
 }

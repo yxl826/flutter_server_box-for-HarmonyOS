@@ -37,7 +37,6 @@ class _HomePageState extends State<HomePage>
   final _isLandscape = ValueNotifier(false);
 
   bool _switchingPage = false;
-  bool _shouldAuth = false;
 
   @override
   void initState() {
@@ -78,18 +77,12 @@ class _HomePageState extends State<HomePage>
 
     switch (state) {
       case AppLifecycleState.resumed:
-        if (_shouldAuth) {
-          if (Stores.setting.useBioAuth.fetch()) {
-            BioAuth.go().then((_) => _shouldAuth = false);
-          }
-        }
         if (!Pros.server.isAutoRefreshOn) {
           Pros.server.startAutoRefresh();
         }
         HomeWidgetMC.update();
         break;
       case AppLifecycleState.paused:
-        _shouldAuth = true;
         // Keep running in background on Android device
         if (isAndroid && Stores.setting.bgRun.fetch()) {
           // Keep this if statement single
@@ -169,7 +162,7 @@ class _HomePageState extends State<HomePage>
   Widget _buildBottomBar(bool ls) {
     return NavigationBar(
       selectedIndex: _selectIndex.value,
-      height: kBottomNavigationBarHeight * (ls ? 0.75 : 1.1),
+      height: kBottomNavigationBarHeight * (ls ? 0.7 : 0.95),
       animationDuration: const Duration(milliseconds: 250),
       onDestinationSelected: (int index) {
         if (_selectIndex.value == index) return;
@@ -291,7 +284,7 @@ class _HomePageState extends State<HomePage>
           data: '''
 ${l10n.madeWithLove('[lollipopkit](${Urls.myGithub})')}
 
-由 yxl826 修改
+鸿蒙版由 yxl826 迁移，原作者 lollipopkit
 
 #### Contributors
 ${GithubIds.contributors.map((e) => '[$e](${e.url})').join(' ')}
@@ -316,9 +309,6 @@ ${GithubIds.participants.map((e) => '[$e](${e.url})').join(' ')}
 
   @override
   Future<void> afterFirstLayout(BuildContext context) async {
-    // Auth required for first launch
-    if (Stores.setting.useBioAuth.fetch()) BioAuth.go();
-
     //_reqNotiPerm();
 
     HomeWidgetMC.update();

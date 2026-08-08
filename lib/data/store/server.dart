@@ -1,21 +1,92 @@
+import 'dart:async';
+
 import 'package:fl_lib/fl_lib.dart';
 
-import '../model/server/server_private_info.dart';
+import 'package:server_box/data/model/server/server_private_info.dart';
+import 'package:server_box/data/store/container.dart';
+import 'package:server_box/data/store/setting.dart';
+import 'package:server_box/data/store/snippet.dart';
 
-class ServerStore extends PersistentStore {
-  ServerStore() : super('server');
+class ServerStore extends HiveStore {
+  ServerStore._() : super('server');
 
-  void put(ServerPrivateInfo info) {
-    box.put(info.id, info);
-    box.updateLastModified();
+  static final instance = ServerStore._();
+
+  List<Spi>? _cache;
+  StreamSubscription<dynamic>? _boxWatchSub;
+  bool _suppressWatch = false;
+
+  @override
+  Future<void> init() async {
+    await super.init();
+    _boxWatchSub?.cancel();
+    _boxWatchSub = box.watch().listen((_) {
+      if (!_suppressWatch) {
+        _cache = null;
+      }
+    });
   }
 
-  List<ServerPrivateInfo> fetch() {
-    final ids = box.keys;
-    final List<ServerPrivateInfo> ss = [];
-    for (final id in ids) {
-      final s = box.get(id);
-      if (s != null && s is ServerPrivateInfo) {
+  @override
+  bool clear({bool? updateLastUpdateTsOnClear}) {
+    _suppressWatch = true;
+    try {
+      _cache = null;
+      return super.clear(updateLastUpdateTsOnClear: updateLastUpdateTsOnClear);
+    } finally {
+      _suppressWatch = false;
+    }
+  }
+
+  void invalidateCache() {
+    _cache = null;
+  }
+
+  void put(Spi info) {
+    _suppressWatch = true;
+    try {
+      set(info.id, info);
+      _cache = null;
+    } finally {
+      _suppressWatch = false;
+    }
+  }
+
+  void _putWithoutInvalidatingCache(Spi info) {
+    _suppressWatch = true;
+    try {
+      box.put(info.id, info);
+    } finally {
+      _suppressWatch = false;
+    }
+  }
+
+  List<Spi> fetch() {
+    return List<Spi>.from(_cache ??= _loadAll());
+  }
+
+  List<Spi> _loadAll() {
+    final List<Spi> ss = [];
+    for (final id in keys()) {
+      final s = get<Spi>(
+        id,
+        fromObj: (val) {
+          if (val is Spi) return val;
+          if (val is Map<dynamic, dynamic>) {
+            final map = val.toStrDynMap;
+            if (map == null) return null;
+            try {
+              final spi = Spi.fromJson(map as Map<String, dynamic>);
+              _putWithoutInvalidatingCache(spi);
+              return spi;
+            } catch (e) {
+              dprint('Parsing Spi from JSON', e);
+            }
+          }
+          return null;
+        },
+      );
+      if (s != null) {
         ss.add(s);
       }
     }
@@ -23,22 +94,114 @@ class ServerStore extends PersistentStore {
   }
 
   void delete(String id) {
-    box.delete(id);
-    box.updateLastModified();
+    _suppressWatch = true;
+    try {
+      remove(id);
+      _cache = null;
+    } finally {
+      _suppressWatch = false;
+    }
   }
 
-  void deleteAll() {
-    box.clear();
-    box.updateLastModified();
-  }
-
-  void update(ServerPrivateInfo old, ServerPrivateInfo newInfo) {
+  void update(Spi old, Spi newInfo) {
     if (!have(old)) {
       throw Exception('Old spi: $old not found');
     }
-    delete(old.id);
-    put(newInfo);
+    _suppressWatch = true;
+    try {
+      remove(old.id);
+      set(newInfo.id, newInfo);
+      _cache = null;
+    } finally {
+      _suppressWatch = false;
+    }
   }
 
-  bool have(ServerPrivateInfo s) => box.get(s.id) != null;
+  bool have(Spi s) => get(s.id) != null;
+
+  void migrateIds() {
+    final ss = fetch();
+    final idMap = <String, String>{};
+
+    for (final s in ss) {
+      final newId = s.migrateId();
+      if (newId == null) continue;
+      idMap[s.oldId] = newId;
+    }
+
+    final srvOrder = SettingStore.instance.serverOrder.fetch();
+    final snippets = SnippetStore.instance.fetch();
+    final container = ContainerStore.instance;
+
+    bool srvOrderChanged = false;
+    for (final e in idMap.entries) {
+      final oldId = e.key;
+      final newId = e.value;
+
+      final srvIdx = srvOrder.indexOf(oldId);
+      if (srvIdx != -1) {
+        srvOrder[srvIdx] = newId;
+        srvOrderChanged = true;
+      }
+
+      final spi = get<Spi>(newId);
+      if (spi != null) {
+        final newSpi = _replaceJumpIds(spi, idMap);
+        if (newSpi != null) {
+          update(spi, newSpi);
+        }
+      }
+
+      for (final snippet in snippets) {
+        final autoRunsOn = snippet.autoRunOn;
+        final idx = autoRunsOn?.indexOf(oldId);
+        if (idx != null && idx != -1) {
+          final newAutoRunsOn = List<String>.from(autoRunsOn ?? []);
+          newAutoRunsOn[idx] = newId;
+          final newSnippet = snippet.copyWith(autoRunOn: newAutoRunsOn);
+          SnippetStore.instance.update(snippet, newSnippet);
+        }
+      }
+
+      final dockerHost = container.fetch(oldId);
+      if (dockerHost != null) {
+        container.remove(oldId);
+        container.set(newId, dockerHost);
+      }
+    }
+
+    for (final spi in ss) {
+      if (get(spi.id) == null) continue;
+      final newSpi = _replaceJumpIds(spi, idMap);
+      if (newSpi != null) {
+        update(spi, newSpi);
+      }
+    }
+
+    if (srvOrderChanged) {
+      SettingStore.instance.serverOrder.put(srvOrder);
+    }
+  }
+}
+
+Spi? _replaceJumpIds(Spi spi, Map<String, String> idMap) {
+  var changed = false;
+  final resolvedJumpIds = spi.resolvedJumpIds;
+  final newJumpIds = resolvedJumpIds.map((id) {
+    final newId = idMap[id];
+    if (newId == null) return id;
+    changed = true;
+    return newId;
+  }).toList();
+
+  final newJumpId = spi.jumpId != null && idMap.containsKey(spi.jumpId)
+      ? idMap[spi.jumpId]
+      : spi.jumpId;
+  changed = changed || newJumpId != spi.jumpId;
+
+  if (!changed) return null;
+  return spi.copyWith(
+    jumpId: newJumpIds.isEmpty ? newJumpId : newJumpIds.first,
+    jumpIds: newJumpIds.isEmpty ? null : newJumpIds,
+  );
 }

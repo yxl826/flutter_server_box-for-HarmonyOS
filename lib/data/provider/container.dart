@@ -4,81 +4,88 @@ import 'dart:convert';
 import 'package:dartssh2/dartssh2.dart';
 import 'package:fl_lib/fl_lib.dart';
 import 'package:flutter/material.dart';
+import 'package:freezed_annotation/freezed_annotation.dart';
+import 'package:riverpod_annotation/riverpod_annotation.dart';
+import 'package:server_box/core/extension/context/locale.dart';
 import 'package:server_box/core/extension/ssh_client.dart';
-import 'package:server_box/data/model/app/shell_func.dart';
+import 'package:server_box/data/model/app/error.dart';
+import 'package:server_box/data/model/app/scripts/script_consts.dart';
 import 'package:server_box/data/model/container/image.dart';
 import 'package:server_box/data/model/container/ps.dart';
-import 'package:server_box/data/model/app/error.dart';
 import 'package:server_box/data/model/container/type.dart';
 import 'package:server_box/data/res/store.dart';
 
-final _dockerNotFound =
-    RegExp(r"command not found|Unknown command|Command '\w+' not found");
+part 'container.freezed.dart';
+part 'container.g.dart';
 
-class ContainerProvider extends ChangeNotifier {
-  final SSHClient? client;
-  final String userName;
-  final String hostId;
-  final BuildContext context;
-  List<ContainerPs>? items;
-  List<ContainerImg>? images;
-  String? version;
-  ContainerErr? error;
-  String? runLog;
-  ContainerType type;
+final _dockerNotFound = RegExp(r"command not found|Unknown command|Command '\w+' not found");
+final _podmanEmulationMsg = 'Emulate Docker CLI using podman';
+
+@freezed
+abstract class ContainerState with _$ContainerState {
+  const factory ContainerState({
+    @Default(null) List<ContainerPs>? items,
+    @Default(null) List<ContainerImg>? images,
+    @Default(null) String? version,
+    @Default(null) ContainerErr? error,
+    @Default(null) String? runLog,
+    @Default(ContainerType.docker) ContainerType type,
+    @Default(false) bool isBusy,
+  }) = _ContainerState;
+}
+
+@riverpod
+class ContainerNotifier extends _$ContainerNotifier {
   var sudoCompleter = Completer<bool>();
-  bool isBusy = false;
+  String? _cachedPassword;
 
-  ContainerProvider({
-    required this.client,
-    required this.userName,
-    required this.hostId,
-    required this.context,
-  }) : type = Stores.container.getType(hostId) {
-    refresh();
+  @override
+  ContainerState build(SSHClient? client, String userName, String hostId, BuildContext context) {
+    final type = Stores.container.getType(hostId);
+    final initialState = ContainerState(type: type);
+
+    // Async initialization
+    Future.microtask(() => refresh());
+
+    return initialState;
+  }
+
+  Future<String?> _getSudoPassword() async {
+    if (_cachedPassword != null) return _cachedPassword;
+
+    if (!context.mounted) return null;
+    final pwd = await context.showPwdDialog(title: userName, id: hostId);
+
+    if (pwd != null && pwd.isNotEmpty) {
+      _cachedPassword = pwd;
+    }
+    return pwd;
   }
 
   Future<void> setType(ContainerType type) async {
-    this.type = type;
+    state = state.copyWith(type: type, error: null, runLog: null, items: null, images: null, version: null);
     Stores.container.setType(type, hostId);
-    error = runLog = items = images = version = null;
     sudoCompleter = Completer<bool>();
-    notifyListeners();
     await refresh();
   }
 
-  // Future<bool> _checkDockerInstalled(SSHClient client) async {
-  //   final session = await client.execute("docker");
-  //   await session.done;
-  //   // debugPrint('docker code: ${session.exitCode}');
-  //   return session.exitCode == 0;
-  // }
-
-  // String _removeSudoPrompts(String value) {
-  //   final regex = RegExp(r"\[sudo\] password for \w+:");
-  //   if (value.startsWith(regex)) {
-  //     return value.replaceFirstMapped(regex, (match) => "");
-  //   }
-  //   return value;
-  // }
-
   void _requiresSudo() async {
     /// Podman is rootless
-    if (type == ContainerType.podman) return sudoCompleter.complete(false);
+    if (state.type == ContainerType.podman) return sudoCompleter.complete(false);
     if (!Stores.setting.containerTrySudo.fetch()) {
       return sudoCompleter.complete(false);
     }
 
-    final res = await client?.run(_wrap(ContainerCmdType.images.exec(type)));
-    if (res?.string.toLowerCase().contains("permission denied") ?? false) {
+    final res = await client?.run(_wrap(ContainerCmdType.images.exec(state.type)));
+    if (res?.string.toLowerCase().contains('permission denied') ?? false) {
       return sudoCompleter.complete(true);
     }
     return sudoCompleter.complete(false);
   }
 
   Future<void> refresh({bool isAuto = false}) async {
-    if (isBusy) return;
-    isBusy = true;
+    if (state.isBusy) return;
+    state = state.copyWith(isBusy: true);
 
     if (!sudoCompleter.isCompleted) _requiresSudo();
 
@@ -86,100 +93,158 @@ class ContainerProvider extends ChangeNotifier {
 
     /// If sudo is required and auto refresh is enabled, skip the refresh.
     /// Or this will ask for pwd again and again.
-    if (sudo && isAuto) return;
+    if (sudo && isAuto) {
+      state = state.copyWith(isBusy: false);
+      return;
+    }
+
+    String? password;
+    if (sudo) {
+      password = await _getSudoPassword();
+      if (password == null) {
+        state = state.copyWith(
+          isBusy: false,
+          error: ContainerErr(
+            type: ContainerErrType.sudoPasswordRequired,
+            message: l10n.containerSudoPasswordRequired,
+          ),
+        );
+        return;
+      }
+    }
+
     final includeStats = Stores.setting.containerParseStat.fetch();
 
-    var raw = '';
-    final cmd = _wrap(ContainerCmdType.execAll(
-      type,
-      sudo: sudo,
-      includeStats: includeStats,
-    ));
-    final code = await client?.execWithPwd(
-      cmd,
-      context: context,
-      onStdout: (data, _) => raw = '$raw$data',
-      id: hostId,
-    );
+    final cmd = _wrap(ContainerCmdType.execAll(state.type, sudo: sudo, includeStats: includeStats, password: password));
+    int? code;
+    String raw = '';
+    var isPodmanEmulation = false;
+    if (client != null) {
+      (code, raw) = await client!.execWithPwd(
+        cmd,
+        context: context,
+        id: hostId,
+        onStderr: (data, _) {
+          if (data.contains(_podmanEmulationMsg)) {
+            isPodmanEmulation = true;
+          }
+        },
+      );
+    } else {
+      state = state.copyWith(
+        isBusy: false,
+        error: ContainerErr(type: ContainerErrType.noClient),
+      );
+      return;
+    }
 
-    isBusy = false;
+    if (!ref.mounted) return;
+    state = state.copyWith(isBusy: false);
 
     if (!context.mounted) return;
 
     /// Code 127 means command not found
     if (code == 127 || raw.contains(_dockerNotFound)) {
-      error = ContainerErr(type: ContainerErrType.notInstalled);
-      notifyListeners();
+      state = state.copyWith(error: ContainerErr(type: ContainerErrType.notInstalled));
+      return;
+    }
+
+    /// Sudo password error (exitCode = 2)
+    if (code == 2) {
+      _cachedPassword = null;
+      state = state.copyWith(error: ContainerErr(
+        type: ContainerErrType.sudoPasswordIncorrect,
+        message: l10n.containerSudoPasswordIncorrect,
+      ));
+      return;
+    }
+
+    /// Pre-parse Podman detection
+    if (isPodmanEmulation) {
+      state = state.copyWith(
+        error: ContainerErr(
+          type: ContainerErrType.podmanDetected,
+          message: l10n.podmanDockerEmulationDetected,
+        ),
+      );
+      return;
+    }
+
+    /// Detect Podman not installed when using Podman mode
+    if (state.type == ContainerType.podman && raw.contains('podman: not found')) {
+      state = state.copyWith(error: ContainerErr(type: ContainerErrType.notInstalled));
       return;
     }
 
     // Check result segments count
-    final segments = raw.split(ShellFunc.seperator);
+    final segments = raw.split(ScriptConstants.separator);
     if (segments.length != ContainerCmdType.values.length) {
-      error = ContainerErr(
-        type: ContainerErrType.segmentsNotMatch,
-        message: 'Container segments: ${segments.length}',
+      state = state.copyWith(
+        error: ContainerErr(
+          type: ContainerErrType.segmentsNotMatch,
+          message: 'Container segments: ${segments.length}',
+        ),
       );
       Loggers.app.warning('Container segments: ${segments.length}\n$raw');
-      notifyListeners();
       return;
     }
 
     // Parse version
     final verRaw = ContainerCmdType.version.find(segments);
     try {
-      version = json.decode(verRaw)['Client']['Version'];
+      final version = json.decode(verRaw)['Client']['Version'];
+      state = state.copyWith(version: version, error: null);
     } catch (e, trace) {
-      error = ContainerErr(
-        type: ContainerErrType.invalidVersion,
-        message: '$e',
-      );
+      if (state.error == null) {
+        state = state.copyWith(
+          error: ContainerErr(type: ContainerErrType.invalidVersion, message: '$e'),
+        );
+      }
       Loggers.app.warning('Container version failed', e, trace);
-    } finally {
-      notifyListeners();
     }
 
     // Parse ps
     final psRaw = ContainerCmdType.ps.find(segments);
     try {
       final lines = psRaw.split('\n');
-      if (type == ContainerType.docker) {
+      if (state.type == ContainerType.docker) {
         /// Due to the fetched data is not in json format, skip table header
         lines.removeWhere((element) => element.contains('CONTAINER ID'));
       }
       lines.removeWhere((element) => element.isEmpty);
-      items = lines.map((e) => ContainerPs.fromRaw(e, type)).toList();
+      final items = lines.map((e) => ContainerPs.fromRaw(e, state.type)).toList();
+      state = state.copyWith(items: items);
     } catch (e, trace) {
-      error = ContainerErr(
-        type: ContainerErrType.parsePs,
-        message: '$e',
-      );
+      if (state.error == null) {
+        state = state.copyWith(
+          error: ContainerErr(type: ContainerErrType.parsePs, message: '$e'),
+        );
+      }
       Loggers.app.warning('Container ps failed', e, trace);
-    } finally {
-      notifyListeners();
     }
 
     // Parse images
     final imageRaw = ContainerCmdType.images.find(segments).trim();
     final isEntireJson = imageRaw.startsWith('[') && imageRaw.endsWith(']');
     try {
+      List<ContainerImg> images;
       if (isEntireJson) {
         images = (json.decode(imageRaw) as List)
-            .map((e) => ContainerImg.fromRawJson(json.encode(e), type))
+            .map((e) => ContainerImg.fromRawJson(json.encode(e), state.type))
             .toList();
       } else {
         final lines = imageRaw.split('\n');
         lines.removeWhere((element) => element.isEmpty);
-        images = lines.map((e) => ContainerImg.fromRawJson(e, type)).toList();
+        images = lines.map((e) => ContainerImg.fromRawJson(e, state.type)).toList();
       }
+      state = state.copyWith(images: images);
     } catch (e, trace) {
-      error = ContainerErr(
-        type: ContainerErrType.parseImages,
-        message: '$e',
-      );
+      if (state.error == null) {
+        state = state.copyWith(
+          error: ContainerErr(type: ContainerErrType.parseImages, message: '$e'),
+        );
+      }
       Loggers.app.warning('Container images failed', e, trace);
-    } finally {
-      notifyListeners();
     }
 
     // Parse stats
@@ -187,25 +252,28 @@ class ContainerProvider extends ChangeNotifier {
     try {
       final statsLines = statsRaw.split('\n');
       statsLines.removeWhere((element) => element.isEmpty);
-      for (var item in items!) {
+      final items = state.items;
+      if (items == null) return;
+
+      for (var item in items) {
         final id = item.id;
         if (id == null) continue;
+        if (id.length < 5) continue;
         final statsLine = statsLines.firstWhereOrNull(
           /// Use 5 characters to match the container id, possibility of mismatch
           /// is very low.
           (element) => element.contains(id.substring(0, 5)),
         );
         if (statsLine == null) continue;
-        item.parseStats(statsLine);
+        item.parseStats(statsLine, state.version);
       }
     } catch (e, trace) {
-      error = ContainerErr(
-        type: ContainerErrType.parseStats,
-        message: '$e',
-      );
+      if (state.error == null) {
+        state = state.copyWith(
+          error: ContainerErr(type: ContainerErrType.parseStats, message: '$e'),
+        );
+      }
       Loggers.app.warning('Parse docker stats: $statsRaw', e, trace);
-    } finally {
-      notifyListeners();
     }
   }
 
@@ -222,32 +290,70 @@ class ContainerProvider extends ChangeNotifier {
 
   Future<ContainerErr?> restart(String id) async => await run('restart $id');
 
+  Future<ContainerErr?> pruneImages({bool all = true}) async {
+    final cmd = 'image prune${all ? " -a" : ""} -f';
+    return await run(cmd);
+  }
+
+  Future<ContainerErr?> pruneContainers() async {
+    return await run('container prune -f');
+  }
+
+  Future<ContainerErr?> pruneVolumes() async {
+    return await run('volume prune -f');
+  }
+
+  Future<ContainerErr?> pruneSystem() async {
+    return await run('system prune -a -f --volumes');
+  }
+
   Future<ContainerErr?> run(String cmd, {bool autoRefresh = true}) async {
-    cmd = switch (type) {
+    if (client == null) {
+      return ContainerErr(type: ContainerErrType.noClient);
+    }
+
+    cmd = switch (state.type) {
       ContainerType.docker => 'docker $cmd',
       ContainerType.podman => 'podman $cmd',
     };
 
-    runLog = '';
-    final errs = <String>[];
-    final code = await client?.execWithPwd(
-      _wrap((await sudoCompleter.future) ? 'sudo -S $cmd' : cmd),
+    final needSudo = await sudoCompleter.future;
+    String? password;
+    if (needSudo) {
+      password = await _getSudoPassword();
+      if (password == null) {
+        return ContainerErr(
+          type: ContainerErrType.sudoPasswordRequired,
+          message: l10n.containerSudoPasswordRequired,
+        );
+      }
+    }
+
+    if (needSudo) {
+      cmd = _buildSudoCmd(cmd, password!);
+    }
+
+    state = state.copyWith(runLog: '');
+    final (code, _) = await client!.execWithPwd(
+      _wrap(cmd),
       context: context,
       onStdout: (data, _) {
-        runLog = '$runLog$data';
-        notifyListeners();
+        state = state.copyWith(runLog: '${state.runLog}$data');
       },
-      onStderr: (data, _) => errs.add(data),
       id: hostId,
     );
-    runLog = null;
-    notifyListeners();
 
-    if (code != 0) {
+    state = state.copyWith(runLog: null);
+
+    if (code == 2) {
+      _cachedPassword = null;
       return ContainerErr(
-        type: ContainerErrType.unknown,
-        message: errs.join('\n').trim(),
+        type: ContainerErrType.sudoPasswordIncorrect,
+        message: l10n.containerSudoPasswordIncorrect,
       );
+    }
+    if (code != 0) {
+      return ContainerErr(type: ContainerErrType.unknown, message: 'Command execution failed');
     }
     if (autoRefresh) await refresh();
     return null;
@@ -267,44 +373,59 @@ class ContainerProvider extends ChangeNotifier {
 
 const _jsonFmt = '--format "{{json .}}"';
 
+String _buildSudoCmd(String baseCmd, String password) {
+  final pwdBase64 = base64Encode(utf8.encode(password));
+  return 'echo "$pwdBase64" | base64 -d | sudo -S $baseCmd';
+}
+
 enum ContainerCmdType {
   version,
   ps,
   stats,
-  images,
+  images
+  // No specific commands needed for prune actions as they are simple
+  // and don't require splitting output with ScriptConstants.separator
   ;
 
-  String exec(
-    ContainerType type, {
-    bool sudo = false,
-    bool includeStats = false,
-  }) {
-    final prefix = sudo ? 'sudo -S ${type.name}' : type.name;
-    return switch (this) {
-      ContainerCmdType.version => '$prefix version $_jsonFmt',
+  String exec(ContainerType type, {bool includeStats = false}) {
+    final baseCmd = switch (this) {
+      ContainerCmdType.version => '${type.name} version $_jsonFmt',
       ContainerCmdType.ps => switch (type) {
-          /// TODO: Rollback to json format when permformance recovers.
-          /// Use [_jsonFmt] in Docker will cause the operation to slow down.
-          ContainerType.docker => '$prefix ps -a --format "table {{printf \\"'
+        /// TODO: Rollback to json format when performance recovers.
+        /// Use [_jsonFmt] in Docker will cause the operation to slow down.
+        ContainerType.docker =>
+          '${type.name} ps -a --format "table {{printf \\"'
               '%-15.15s '
               '%-30.30s '
               '${"%-50.50s " * 2}\\"'
               ' .ID .Status .Names .Image}}"',
-          ContainerType.podman => '$prefix ps -a $_jsonFmt',
-        },
-      ContainerCmdType.stats =>
-        includeStats ? '$prefix stats --no-stream $_jsonFmt' : 'echo PASS',
-      ContainerCmdType.images => '$prefix image ls $_jsonFmt',
+        ContainerType.podman => '${type.name} ps -a $_jsonFmt',
+      },
+      ContainerCmdType.stats => includeStats ? '${type.name} stats --no-stream $_jsonFmt' : 'echo PASS',
+      ContainerCmdType.images => '${type.name} image ls $_jsonFmt',
     };
+
+    return baseCmd;
   }
 
-  static String execAll(
-    ContainerType type, {
-    bool sudo = false,
-    bool includeStats = false,
-  }) {
-    return ContainerCmdType.values
-        .map((e) => e.exec(type, sudo: sudo, includeStats: includeStats))
-        .join('\necho ${ShellFunc.seperator}\n');
+  static String execAll(ContainerType type, {bool sudo = false, bool includeStats = false, String? password}) {
+    final commands = ContainerCmdType.values
+        .map((e) => e.exec(type, includeStats: includeStats))
+        .join('\necho ${ScriptConstants.separator}\n');
+
+    final wrappedCommands = 'sh -c \'${commands.replaceAll("'", "'\\''")}\'';
+
+    if (sudo && password != null) {
+      return _buildSudoCmd(wrappedCommands, password);
+    }
+    if (sudo) {
+      return 'sudo -S $wrappedCommands';
+    }
+    return wrappedCommands;
+  }
+
+  /// Find out the required segment from [segments]
+  String find(List<String> segments) {
+    return segments[index];
   }
 }

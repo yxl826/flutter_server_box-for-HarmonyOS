@@ -1,80 +1,106 @@
-import 'dart:convert';
-
 import 'package:fl_lib/fl_lib.dart';
-import 'package:flutter/material.dart';
+import 'package:freezed_annotation/freezed_annotation.dart';
+import 'package:riverpod_annotation/riverpod_annotation.dart';
+import 'package:server_box/core/sync.dart';
 import 'package:server_box/data/model/server/snippet.dart';
 import 'package:server_box/data/res/store.dart';
 
-class SnippetProvider extends ChangeNotifier {
-  late List<Snippet> _snippets;
-  List<Snippet> get snippets => _snippets;
+part 'snippet.freezed.dart';
+part 'snippet.g.dart';
 
-  final _tags = ValueNotifier(<String>[]);
-  ValueNotifier<List<String>> get tags => _tags;
+@freezed
+abstract class SnippetState with _$SnippetState {
+  const factory SnippetState({
+    @Default(<Snippet>[]) List<Snippet> snippets,
+    @Default(<String>{}) Set<String> tags,
+  }) = _SnippetState;
+}
 
-  void load() {
-    _snippets = Stores.snippet.fetch();
+@Riverpod(keepAlive: true)
+class SnippetNotifier extends _$SnippetNotifier {
+  @override
+  SnippetState build() {
+    return _load();
+  }
+
+  void reload() {
+    Stores.snippet.invalidateCache();
+    final newState = _load();
+    if (newState == state) return;
+    state = newState;
+  }
+
+  SnippetState _load() {
+    final snippets = Stores.snippet.fetch();
     final order = Stores.setting.snippetOrder.fetch();
+
+    List<Snippet> orderedSnippets = snippets;
     if (order.isNotEmpty) {
-      final surplus = _snippets.reorder(
-        order: order,
-        finder: (n, name) => n.name == name,
-      );
+      final surplus = snippets.reorder(order: order, finder: (n, name) => n.name == name);
       order.removeWhere((e) => surplus.any((ele) => ele == e));
       if (order != Stores.setting.snippetOrder.fetch()) {
         Stores.setting.snippetOrder.put(order);
       }
+      orderedSnippets = snippets;
     }
-    _updateTags();
+
+    final newTags = _computeTags(orderedSnippets);
+    return stateOrNull?.copyWith(snippets: orderedSnippets, tags: newTags) ??
+        SnippetState(snippets: orderedSnippets, tags: newTags);
   }
 
-  void _updateTags() {
-    _tags.value.clear();
+  Set<String> _computeTags(List<Snippet> snippets) {
     final tags = <String>{};
-    for (final s in _snippets) {
-      if (s.tags?.isEmpty ?? true) {
-        continue;
+    for (final s in snippets) {
+      final t = s.tags;
+      if (t != null) {
+        tags.addAll(t);
       }
-      tags.addAll(s.tags!);
     }
-    _tags.value.addAll(tags);
-    _tags.notifyListeners();
+    return tags;
   }
 
   void add(Snippet snippet) {
-    _snippets.add(snippet);
+    final newSnippets = [...state.snippets, snippet];
+    final newTags = _computeTags(newSnippets);
+    state = state.copyWith(snippets: newSnippets, tags: newTags);
     Stores.snippet.put(snippet);
-    _updateTags();
-    notifyListeners();
+    bakSync.sync(milliDelay: 1000);
   }
 
   void del(Snippet snippet) {
-    _snippets.remove(snippet);
+    final newSnippets = state.snippets.where((s) => s != snippet).toList();
+    final newTags = _computeTags(newSnippets);
+    state = state.copyWith(snippets: newSnippets, tags: newTags);
     Stores.snippet.delete(snippet);
-    _updateTags();
-    notifyListeners();
+    bakSync.sync(milliDelay: 1000);
   }
 
   void update(Snippet old, Snippet newOne) {
+    final newSnippets = state.snippets.map((s) => s == old ? newOne : s).toList();
+    final newTags = _computeTags(newSnippets);
+    state = state.copyWith(snippets: newSnippets, tags: newTags);
     Stores.snippet.delete(old);
     Stores.snippet.put(newOne);
-    _snippets.remove(old);
-    _snippets.add(newOne);
-    _updateTags();
-    notifyListeners();
+    bakSync.sync(milliDelay: 1000);
   }
 
   void renameTag(String old, String newOne) {
-    for (final s in _snippets) {
+    final updatedSnippets = <Snippet>[];
+    for (final s in state.snippets) {
       if (s.tags?.contains(old) ?? false) {
-        s.tags?.remove(old);
-        s.tags?.add(newOne);
-        Stores.snippet.put(s);
+        final newTags = Set<String>.from(s.tags!);
+        newTags.remove(old);
+        newTags.add(newOne);
+        final updatedSnippet = s.copyWith(tags: newTags.toList());
+        updatedSnippets.add(updatedSnippet);
+        Stores.snippet.put(updatedSnippet);
+      } else {
+        updatedSnippets.add(s);
       }
     }
-    _updateTags();
-    notifyListeners();
+    final newTags = _computeTags(updatedSnippets);
+    state = state.copyWith(snippets: updatedSnippets, tags: newTags);
+    bakSync.sync(milliDelay: 1000);
   }
-
-  String get export => json.encode(snippets);
 }

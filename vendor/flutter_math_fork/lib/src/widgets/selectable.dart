@@ -290,11 +290,11 @@ class SelectableMath extends StatelessWidget {
             iOSHorizontalOffset / MediaQuery.of(context).devicePixelRatio, 0);
         break;
 
+      case TargetPlatform.ohos:
       case TargetPlatform.android:
       case TargetPlatform.fuchsia:
       case TargetPlatform.linux:
       case TargetPlatform.windows:
-      case TargetPlatform.ohos:
         forcePressEnabled = false;
         textSelectionControls ??= materialTextSelectionControls;
         paintCursorAboveText = false;
@@ -478,11 +478,11 @@ class InternalSelectableMathState extends State<InternalSelectableMath>
           bringIntoView(selection.base);
         }
         return;
+      case TargetPlatform.ohos:
       case TargetPlatform.android:
       case TargetPlatform.fuchsia:
       case TargetPlatform.linux:
       case TargetPlatform.windows:
-      case TargetPlatform.ohos:
       // Do nothing.
     }
   }
@@ -602,7 +602,7 @@ class SelectionStyle {
   }
 
   @override
-  int get hashCode => hashValues(
+  int get hashCode => Object.hash(
         cursorColor,
         cursorOffset,
         cursorRadius,

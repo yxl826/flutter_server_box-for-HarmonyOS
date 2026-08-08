@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:fl_lib/fl_lib.dart';
 import 'package:server_box/core/extension/context/locale.dart';
+import 'package:server_box/data/model/container/status.dart';
 import 'package:server_box/data/model/container/type.dart';
 import 'package:server_box/data/res/misc.dart';
 
@@ -10,7 +11,7 @@ sealed class ContainerPs {
   final String? image = null;
   String? get name;
   String? get cmd;
-  bool get running;
+  ContainerStatus get status;
 
   String? cpu;
   String? mem;
@@ -19,7 +20,7 @@ sealed class ContainerPs {
 
   factory ContainerPs.fromRaw(String s, ContainerType typ) => typ.ps(s);
 
-  void parseStats(String s);
+  void parseStats(String s, [String? version]);
 }
 
 final class PodmanPs implements ContainerPs {
@@ -42,15 +43,7 @@ final class PodmanPs implements ContainerPs {
   @override
   String? disk;
 
-  PodmanPs({
-    this.command,
-    this.created,
-    this.exited,
-    this.id,
-    this.image,
-    this.names,
-    this.startedAt,
-  });
+  PodmanPs({this.command, this.created, this.exited, this.id, this.image, this.names, this.startedAt});
 
   @override
   String? get name => names?.firstOrNull;
@@ -59,55 +52,68 @@ final class PodmanPs implements ContainerPs {
   String? get cmd => command?.firstOrNull;
 
   @override
-  bool get running => exited != true;
+  ContainerStatus get status => ContainerStatus.fromPodmanExited(exited);
 
   @override
-  void parseStats(String s) {
+  void parseStats(String s, [String? version]) {
     final stats = json.decode(s);
     final cpuD = (stats['CPU'] as double? ?? 0).toStringAsFixed(1);
     final cpuAvgD = (stats['AvgCPU'] as double? ?? 0).toStringAsFixed(1);
-    cpu = '$cpuD% / ${l10n.pingAvg} $cpuAvgD%';
+    cpu = '$cpuD% / ${libL10n.pingAvg} $cpuAvgD%';
     final memLimit = (stats['MemLimit'] as int? ?? 0).bytes2Str;
     final memUsage = (stats['MemUsage'] as int? ?? 0).bytes2Str;
     mem = '$memUsage / $memLimit';
-    final netIn = (stats['NetInput'] as int? ?? 0).bytes2Str;
-    final netOut = (stats['NetOutput'] as int? ?? 0).bytes2Str;
-    net = '↓ $netIn / ↑ $netOut';
+
+    int netIn = 0;
+    int netOut = 0;
+    final majorVersion = version?.split('.').firstOrNull;
+    final majorVersionNum = majorVersion != null ? int.tryParse(majorVersion) : null;
+
+    // Podman 4.x and earlier use top-level NetInput/NetOutput fields.
+    // Podman 5.x changed network backend (Netavark) and uses nested
+    // Network.{iface}.RxBytes/TxBytes structure instead.
+    if (majorVersionNum == null || majorVersionNum <= 4) {
+      netIn = stats['NetInput'] as int? ?? 0;
+      netOut = stats['NetOutput'] as int? ?? 0;
+    } else if (majorVersionNum >= 5) {
+      final network = stats['Network'] as Map<String, dynamic>?;
+      if (network != null) {
+        for (final interface in network.values) {
+          netIn += interface['RxBytes'] as int? ?? 0;
+          netOut += interface['TxBytes'] as int? ?? 0;
+        }
+      }
+    }
+    net = '↓ ${netIn.bytes2Str} / ↑ ${netOut.bytes2Str}';
+
     final diskIn = (stats['BlockInput'] as int? ?? 0).bytes2Str;
     final diskOut = (stats['BlockOutput'] as int? ?? 0).bytes2Str;
-    disk = '${l10n.read} $diskOut / ${l10n.write} $diskIn';
+    disk = '${l10n.read} $diskIn / ${l10n.write} $diskOut';
   }
 
-  factory PodmanPs.fromRawJson(String str) =>
-      PodmanPs.fromJson(json.decode(str));
+  factory PodmanPs.fromRawJson(String str) => PodmanPs.fromJson(json.decode(str));
 
   String toRawJson() => json.encode(toJson());
 
   factory PodmanPs.fromJson(Map<String, dynamic> json) => PodmanPs(
-        command: json["Command"] == null
-            ? []
-            : List<String>.from(json["Command"]!.map((x) => x)),
-        created:
-            json["Created"] == null ? null : DateTime.parse(json["Created"]),
-        exited: json["Exited"],
-        id: json["Id"],
-        image: json["Image"],
-        names: json["Names"] == null
-            ? []
-            : List<String>.from(json["Names"]!.map((x) => x)),
-        startedAt: json["StartedAt"],
-      );
+    command: json['Command'] == null ? [] : List<String>.from(json['Command']!.map((x) => x)),
+    created: json['Created'] == null ? null : DateTime.parse(json['Created']),
+    exited: json['Exited'],
+    id: json['Id'],
+    image: json['Image'],
+    names: json['Names'] == null ? [] : List<String>.from(json['Names']!.map((x) => x)),
+    startedAt: json['StartedAt'],
+  );
 
   Map<String, dynamic> toJson() => {
-        "Command":
-            command == null ? [] : List<dynamic>.from(command!.map((x) => x)),
-        "Created": created?.toIso8601String(),
-        "Exited": exited,
-        "Id": id,
-        "Image": image,
-        "Names": names == null ? [] : List<dynamic>.from(names!.map((x) => x)),
-        "StartedAt": startedAt,
-      };
+    'Command': command == null ? [] : List<dynamic>.from(command!.map((x) => x)),
+    'Created': created?.toIso8601String(),
+    'Exited': exited,
+    'Id': id,
+    'Image': image,
+    'Names': names == null ? [] : List<dynamic>.from(names!.map((x) => x)),
+    'StartedAt': startedAt,
+  };
 }
 
 final class DockerPs implements ContainerPs {
@@ -127,12 +133,7 @@ final class DockerPs implements ContainerPs {
   @override
   String? disk;
 
-  DockerPs({
-    this.id,
-    this.image,
-    this.names,
-    this.state,
-  });
+  DockerPs({this.id, this.image, this.names, this.state});
 
   @override
   String? get name => names;
@@ -141,29 +142,27 @@ final class DockerPs implements ContainerPs {
   String? get cmd => null;
 
   @override
-  bool get running {
-    if (state?.contains('Exited') == true) return false;
-    return true;
-  }
+  ContainerStatus get status => ContainerStatus.fromDockerState(state);
 
   @override
-  void parseStats(String s) {
+  void parseStats(String s, [String? version]) {
     final stats = json.decode(s);
     cpu = stats['CPUPerc'];
     mem = stats['MemUsage'];
-    net = stats['NetIO'];
-    disk = stats['BlockIO'];
+
+    final netIO = stats['NetIO'] as String? ?? '0B / 0B';
+    final netParts = netIO.split(' / ');
+    net = '↓ ${netParts.firstOrNull ?? '0B'} / ↑ ${netParts.length > 1 ? netParts[1] : '0B'}';
+
+    final blockIO = stats['BlockIO'] as String? ?? '0B / 0B';
+    final blockParts = blockIO.split(' / ');
+    disk = '${l10n.read} ${blockParts.firstOrNull ?? '0B'} / ${l10n.write} ${blockParts.length > 1 ? blockParts[1] : '0B'}';
   }
 
   /// CONTAINER ID                   NAMES                          IMAGE                          STATUS
   /// a049d689e7a1                   aria2-pro                      p3terx/aria2-pro               Up 3 weeks
   factory DockerPs.parse(String raw) {
     final parts = raw.split(Miscs.multiBlankreg);
-    return DockerPs(
-      id: parts[0],
-      state: parts[1],
-      names: parts[2],
-      image: parts[3].trim(),
-    );
+    return DockerPs(id: parts[0], state: parts[1], names: parts[2], image: parts[3].trim());
   }
 }

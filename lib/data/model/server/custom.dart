@@ -1,76 +1,49 @@
-import 'package:hive_flutter/adapters.dart';
+import 'package:json_annotation/json_annotation.dart';
 
 part 'custom.g.dart';
 
-@HiveType(typeId: 7)
+@JsonSerializable(includeIfNull: false)
 final class ServerCustom {
   // @HiveField(0)
   // final String? temperature;
-  @HiveField(1)
+
   final String? pveAddr;
-  @HiveField(2, defaultValue: false)
+
   final bool pveIgnoreCert;
 
+  final String? pvePwd;
+
   /// {"title": "cmd"}
-  @HiveField(3)
   final Map<String, String>? cmds;
-  @HiveField(4)
+
   final String? preferTempDev;
-  @HiveField(5)
+
+  final bool tempIsCelsius;
+
   final String? logoUrl;
+
+  /// The device name of the network interface displayed in the home server card.
+  final String? netDev;
+
+  /// The directory where the script is stored.
+  final String? scriptDir;
 
   const ServerCustom({
     //this.temperature,
     this.pveAddr,
     this.pveIgnoreCert = false,
+    this.pvePwd,
     this.cmds,
     this.preferTempDev,
+    this.tempIsCelsius = false,
     this.logoUrl,
+    this.netDev,
+    this.scriptDir,
   });
 
-  static ServerCustom fromJson(Map<String, dynamic> json) {
-    //final temperature = json["temperature"] as String?;
-    final pveAddr = json["pveAddr"] as String?;
-    final pveIgnoreCert = json["pveIgnoreCert"] as bool;
-    final cmds = json["cmds"] as Map<String, dynamic>?;
-    final preferTempDev = json["preferTempDev"] as String?;
-    final logoUrl = json["logoUrl"] as String?;
-    return ServerCustom(
-      //temperature: temperature,
-      pveAddr: pveAddr,
-      pveIgnoreCert: pveIgnoreCert,
-      cmds: cmds?.cast<String, String>(),
-      preferTempDev: preferTempDev,
-      logoUrl: logoUrl,
-    );
-  }
+  factory ServerCustom.fromJson(Map<String, dynamic> json) => _$ServerCustomFromJson(json);
 
-  Map<String, dynamic> toJson() {
-    final json = <String, dynamic>{};
-    // if (temperature != null) {
-    //   json["temperature"] = temperature;
-    // }
-    if (pveAddr != null) {
-      json["pveAddr"] = pveAddr;
-    }
-    json["pveIgnoreCert"] = pveIgnoreCert;
-
-    if (cmds != null) {
-      json["cmds"] = cmds;
-    }
-    if (preferTempDev != null) {
-      json["preferTempDev"] = preferTempDev;
-    }
-    if (logoUrl != null) {
-      json["logoUrl"] = logoUrl;
-    }
-    return json;
-  }
-
-  @override
-  String toString() {
-    return toJson().toString();
-  }
+  Map<String, dynamic> toJson() => _$ServerCustomToJson(this);
 
   @override
   bool operator ==(Object other) {
@@ -78,9 +51,13 @@ final class ServerCustom {
         //other.temperature == temperature &&
         other.pveAddr == pveAddr &&
         other.pveIgnoreCert == pveIgnoreCert &&
+        other.pvePwd == pvePwd &&
         other.cmds == cmds &&
         other.preferTempDev == preferTempDev &&
-        other.logoUrl == logoUrl;
+        other.tempIsCelsius == tempIsCelsius &&
+        other.logoUrl == logoUrl &&
+        other.netDev == netDev &&
+        other.scriptDir == scriptDir;
   }
 
   @override
@@ -88,7 +65,11 @@ final class ServerCustom {
       //temperature.hashCode ^
       pveAddr.hashCode ^
       pveIgnoreCert.hashCode ^
+      pvePwd.hashCode ^
       cmds.hashCode ^
       preferTempDev.hashCode ^
-      logoUrl.hashCode;
+      tempIsCelsius.hashCode ^
+      logoUrl.hashCode ^
+      netDev.hashCode ^
+      scriptDir.hashCode;
 }

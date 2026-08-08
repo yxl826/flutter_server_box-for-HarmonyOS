@@ -1,29 +1,259 @@
+import 'dart:convert';
+
+import 'package:equatable/equatable.dart';
 import 'package:fl_lib/fl_lib.dart';
 import 'package:server_box/data/model/server/time_seq.dart';
 
-import '../../res/misc.dart';
+import 'package:server_box/data/res/misc.dart';
 
-class Disk {
-  final String fs;
+class Disk with EquatableMixin {
+  final String path;
+  final String? fsTyp;
   final String mount;
   final int usedPercent;
   final BigInt used;
   final BigInt size;
   final BigInt avail;
 
+  /// Device name (e.g., sda1, nvme0n1p1)
+  final String? name;
+
+  /// Internal kernel device name
+  final String? kname;
+
+  /// Filesystem UUID
+  final String? uuid;
+
+  /// Child disks (partitions)
+  final List<Disk> children;
+
   const Disk({
-    required this.fs,
+    required this.path,
+    this.fsTyp,
     required this.mount,
     required this.usedPercent,
     required this.used,
     required this.size,
     required this.avail,
+    this.name,
+    this.kname,
+    this.uuid,
+    this.children = const [],
   });
 
   static List<Disk> parse(String raw) {
     final list = <Disk>[];
+    raw = raw.trim();
+
+    if (raw.isEmpty) {
+      dprint('Empty disk info data received');
+      return list;
+    }
+
+    try {
+      // Check if we have lsblk JSON output with success marker
+      if (raw.startsWith('{')) {
+        // Extract JSON part (excluding the success marker if present)
+        final jsonEnd = raw.indexOf('\nLSBLK_SUCCESS');
+        final jsonPart = jsonEnd > 0 ? raw.substring(0, jsonEnd) : raw;
+
+        try {
+          final Map<String, dynamic> jsonData = json.decode(jsonPart);
+          final List<dynamic> blockdevices = jsonData['blockdevices'] ?? [];
+
+          for (final device in blockdevices) {
+            // Process each device
+            _processTopLevelDevice(device, list);
+          }
+
+          // If we successfully parsed JSON and have valid disks, return them
+          if (list.isNotEmpty) {
+            return list;
+          }
+        } on FormatException catch (e) {
+          Loggers.app.warning(
+            'JSON parsing failed, falling back to df -k output: $e',
+          );
+        } catch (e) {
+          Loggers.app.warning(
+            'Error processing JSON disk data, falling back to df -k output: $e',
+            e,
+          );
+        }
+      }
+
+      // Check if we have df -k output (fallback case)
+      if (raw.contains('Filesystem') && raw.contains('Mounted on')) {
+        return _parseWithOldMethod(raw);
+      }
+
+      // If we reach here, both parsing methods failed
+      Loggers.app.warning('Unable to parse disk info with any method');
+    } catch (e) {
+      Loggers.app.warning('Failed to parse disk info with both methods: $e', e);
+    }
+    return list;
+  }
+
+  /// Process a top-level device and add all valid disks to the list
+  static void _processTopLevelDevice(
+    Map<String, dynamic> device,
+    List<Disk> list,
+  ) {
+    final fstype = device['fstype']?.toString();
+    final mount = device['mountpoint']?.toString() ?? '';
+    final childDevices = device['children'] ?? [];
+    final fsFields = _parseFilesystemFields(device);
+    final hasFilesystemStats =
+        fsFields.size != BigInt.zero ||
+        fsFields.used != BigInt.zero ||
+        fsFields.avail != BigInt.zero;
+    final hasOwnFilesystem = fstype != null && _shouldCalc(fstype, mount);
+
+    if (!hasFilesystemStats && !hasOwnFilesystem && childDevices.isNotEmpty) {
+      for (final childDevice in childDevices) {
+        final childDisk = _processDiskDevice(childDevice);
+        if (childDisk != null) {
+          list.add(childDisk);
+        }
+      }
+      return;
+    }
+
+    final disk = _processDiskDevice(device);
+    if (disk != null) {
+      list.add(disk);
+    }
+
+    // For devices with children (like physical disks with partitions),
+    // also process each child individually to ensure BTRFS RAID disks are properly handled
+    for (final childDevice in childDevices) {
+      final String childPath = childDevice['path']?.toString() ?? '';
+      final String childFsType = childDevice['fstype']?.toString() ?? '';
+
+      // If this is a BTRFS partition, add it directly to ensure it's properly represented
+      if (childFsType == 'btrfs' && childPath.isNotEmpty) {
+        final childDisk = _processSingleDevice(childDevice);
+        if (childDisk != null) {
+          list.add(childDisk);
+        }
+      }
+    }
+  }
+
+  /// Parse filesystem fields from device data
+  static ({BigInt size, BigInt used, BigInt avail, int usedPercent})
+  _parseFilesystemFields(Map<String, dynamic> device) {
+    // Helper function to parse size strings safely
+    BigInt parseSize(String? sizeStr) {
+      if (sizeStr == null ||
+          sizeStr.isEmpty ||
+          sizeStr == 'null' ||
+          sizeStr == '0') {
+        return BigInt.zero;
+      }
+      return (BigInt.tryParse(sizeStr) ?? BigInt.zero) ~/ BigInt.from(1024);
+    }
+
+    // Helper function to parse percentage strings
+    int parsePercent(String? percentStr) {
+      if (percentStr == null || percentStr.isEmpty || percentStr == 'null') {
+        return 0;
+      }
+      return int.tryParse(percentStr.replaceAll('%', '')) ?? 0;
+    }
+
+    return (
+      size: parseSize(device['fssize']?.toString()),
+      used: parseSize(device['fsused']?.toString()),
+      avail: parseSize(device['fsavail']?.toString()),
+      usedPercent: parsePercent(device['fsuse%']?.toString()),
+    );
+  }
+
+  /// Process a single device without recursively processing its children
+  static Disk? _processSingleDevice(Map<String, dynamic> device) {
+    final fstype = device['fstype']?.toString();
+    final String mountpoint = device['mountpoint']?.toString() ?? '';
+    final String path = device['path']?.toString() ?? '';
+
+    if (path.isEmpty || (fstype == null && mountpoint.isEmpty)) {
+      return null;
+    }
+
+    if (!_shouldCalc(fstype ?? '', mountpoint)) {
+      return null;
+    }
+
+    final fsFields = _parseFilesystemFields(device);
+    final name = device['name']?.toString();
+    final kname = device['kname']?.toString();
+    final uuid = device['uuid']?.toString();
+
+    return Disk(
+      path: path,
+      fsTyp: fstype,
+      mount: mountpoint,
+      usedPercent: fsFields.usedPercent,
+      used: fsFields.used,
+      size: fsFields.size,
+      avail: fsFields.avail,
+      name: name,
+      kname: kname,
+      uuid: uuid,
+      children: const [], // No children for direct device
+    );
+  }
+
+  static Disk? _processDiskDevice(Map<String, dynamic> device) {
+    final fstype = device['fstype']?.toString();
+    final String mountpoint = device['mountpoint']?.toString() ?? '';
+
+    // For parent devices that don't have a mountpoint themselves
+    final String path = device['path']?.toString() ?? '';
+    final String mount = mountpoint;
+    final List<Disk> childDisks = [];
+
+    // Process children devices recursively
+    final List<dynamic> childDevices = device['children'] ?? [];
+    for (final childDevice in childDevices) {
+      final childDisk = _processDiskDevice(childDevice);
+      if (childDisk != null) {
+        childDisks.add(childDisk);
+      }
+    }
+
+    // Handle common filesystem cases or parent devices with children
+    if ((fstype != null && _shouldCalc(fstype, mount)) ||
+        childDisks.isNotEmpty) {
+      final fsFields = _parseFilesystemFields(device);
+      final name = device['name']?.toString();
+      final kname = device['kname']?.toString();
+      final uuid = device['uuid']?.toString();
+
+      return Disk(
+        path: path,
+        fsTyp: fstype,
+        mount: mount,
+        usedPercent: fsFields.usedPercent,
+        used: fsFields.used,
+        size: fsFields.size,
+        avail: fsFields.avail,
+        name: name,
+        kname: kname,
+        uuid: uuid,
+        children: childDisks,
+      );
+    }
+
+    return null;
+  }
+
+  // Fallback to the old parsing method in case JSON parsing fails
+  static List<Disk> _parseWithOldMethod(String raw) {
+    final list = <Disk>[];
     final items = raw.split('\n');
-    items.removeAt(0);
+    if (items.isNotEmpty) items.removeAt(0);
     var pathCache = '';
     for (var item in items) {
       if (item.isEmpty) {
@@ -42,14 +272,16 @@ class Disk {
         final fs = vals[0];
         final mount = vals[5];
         if (!_shouldCalc(fs, mount)) continue;
-        list.add(Disk(
-          fs: fs,
-          mount: mount,
-          usedPercent: int.parse(vals[4].replaceFirst('%', '')),
-          used: BigInt.parse(vals[2]),
-          size: BigInt.parse(vals[1]),
-          avail: BigInt.parse(vals[3]),
-        ));
+        list.add(
+          Disk(
+            path: fs,
+            mount: mount,
+            usedPercent: int.parse(vals[4].replaceFirst('%', '')),
+            used: BigInt.parse(vals[2]) ~/ BigInt.from(1024),
+            size: BigInt.parse(vals[1]) ~/ BigInt.from(1024),
+            avail: BigInt.parse(vals[3]) ~/ BigInt.from(1024),
+          ),
+        );
       } catch (e) {
         continue;
       }
@@ -58,12 +290,22 @@ class Disk {
   }
 
   @override
-  String toString() {
-    return 'Disk{dev: $fs, mount: $mount, usedPercent: $usedPercent, used: $used, size: $size, avail: $avail}';
-  }
+  List<Object?> get props => [
+    path,
+    name,
+    kname,
+    fsTyp,
+    mount,
+    usedPercent,
+    used,
+    size,
+    avail,
+    uuid,
+    children,
+  ];
 }
 
-class DiskIO extends TimeSeq<List<DiskIOPiece>> {
+class DiskIO extends TimeSeq<DiskIOPiece> {
   DiskIO(super.init1, super.init2);
 
   @override
@@ -72,9 +314,16 @@ class DiskIO extends TimeSeq<List<DiskIOPiece>> {
   }
 
   (double?, double?) _getSpeed(String dev) {
-    if (dev.startsWith('/dev/')) dev = dev.substring(5);
-    final old = pre.firstWhereOrNull((e) => e.dev == dev);
-    final new_ = now.firstWhereOrNull((e) => e.dev == dev);
+    // Extract the device name from path if needed
+    String searchDev = dev;
+    if (dev.startsWith('/dev/')) {
+      searchDev = dev.substring(5);
+    }
+
+    // Try to find by exact device name first
+    final old = pre.firstWhereOrNull((e) => e.dev == searchDev);
+    final new_ = now.firstWhereOrNull((e) => e.dev == searchDev);
+
     if (old == null || new_ == null) return (null, null);
     final sectorsRead = new_.sectorsRead - old.sectorsRead;
     final sectorsWrite = new_.sectorsWrite - old.sectorsWrite;
@@ -104,11 +353,14 @@ class DiskIO extends TimeSeq<List<DiskIOPiece>> {
           !item.dev.startsWith('vd') &&
           !item.dev.startsWith('hd') &&
           !item.dev.startsWith('mmcblk') &&
-          !item.dev.startsWith('sr')) continue;
+          !item.dev.startsWith('sr')) {
+        continue;
+      }
       final (read_, write_) = _getSpeed(item.dev);
       read += read_ ?? 0;
       write += write_ ?? 0;
     }
+
     final readStr = '${read.bytes2Str}/s';
     final writeStr = '${write.bytes2Str}/s';
     return (readStr, writeStr);
@@ -126,12 +378,14 @@ class DiskIO extends TimeSeq<List<DiskIOPiece>> {
       try {
         final dev = vals[2];
         if (dev.startsWith('loop')) continue;
-        items.add(DiskIOPiece(
-          dev: dev,
-          sectorsRead: int.parse(vals[5]),
-          sectorsWrite: int.parse(vals[9]),
-          time: time,
-        ));
+        items.add(
+          DiskIOPiece(
+            dev: dev,
+            sectorsRead: int.parse(vals[5]),
+            sectorsWrite: int.parse(vals[9]),
+            time: time,
+          ),
+        );
       } catch (e) {
         continue;
       }
@@ -161,24 +415,38 @@ class DiskUsage {
   final BigInt used;
   final BigInt size;
 
-  DiskUsage({
-    required this.used,
-    required this.size,
-  });
+  DiskUsage({required this.used, required this.size});
 
-  double get usedPercent => used / size * 100;
+  double get usedPercent {
+    // Avoid division by zero
+    if (size == BigInt.zero) return 0;
+    return used / size * 100;
+  }
 
   /// Find all devs, add their used and size
   static DiskUsage parse(List<Disk> disks) {
     final devs = <String>{};
     var used = BigInt.zero;
     var size = BigInt.zero;
+
+    void visit(Disk disk) {
+      if (!_shouldCalc(disk.path, disk.mount)) return;
+      // Use a combination of path and kernel name to uniquely identify disks
+      // This helps distinguish between multiple physical disks in BTRFS RAID setups
+      final uniqueId = '${disk.path}:${disk.kname ?? "unknown"}';
+      if (!devs.contains(uniqueId)) {
+        devs.add(uniqueId);
+        used += disk.used;
+        size += disk.size;
+      }
+      if (disk.used != BigInt.zero || disk.size != BigInt.zero) return;
+      for (final child in disk.children) {
+        visit(child);
+      }
+    }
+
     for (var disk in disks) {
-      if (!_shouldCalc(disk.fs, disk.mount)) continue;
-      if (devs.contains(disk.fs)) continue;
-      devs.add(disk.fs);
-      used += disk.used;
-      size += disk.size;
+      visit(disk);
     }
     return DiskUsage(used: used, size: size);
   }
@@ -189,8 +457,12 @@ bool _shouldCalc(String fs, String mount) {
   // Some NAS may have mounted path like this `//192.168.1.2/`
   if (fs.startsWith('//')) return true;
   if (mount.startsWith('/mnt')) return true;
-  // if (fs.startsWith('shm') ||
-  //     fs.startsWith('overlay') ||
-  //     fs.startsWith('tmpfs')) return false;
-  return false;
+
+  if (fs.startsWith('shm') ||
+      fs.startsWith('overlay') ||
+      fs.startsWith('tmpfs')) {
+    return false;
+  }
+
+  return true;
 }

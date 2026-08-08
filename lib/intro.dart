@@ -1,26 +1,32 @@
 part of 'app.dart';
 
 final class _IntroPage extends StatelessWidget {
-  const _IntroPage();
+  final List<IntroPageBuilder> pages;
 
-  static final _setting = Stores.setting;
-  static const _kIconSize = 23.0;
-  static const _introListPad = EdgeInsets.symmetric(horizontal: 17);
+  const _IntroPage(this.pages);
+
+  static const _builders = {1: _buildAppSettings, 2: _buildBackupPasswordMigration};
 
   @override
   Widget build(BuildContext context) {
-    return LayoutBuilder(
-      builder: (context, cons) {
-        final padTop = cons.maxHeight * .2;
-        return IntroPage(
-          pages: [
-            _buildAppSettings(context, padTop),
-            _buildRecommended(context, padTop),
-          ],
-          onDone: (ctx) {
-            Stores.setting.showIntro.put(false);
-            Navigator.of(ctx).pushReplacement(
-              MaterialPageRoute(builder: (_) => const HomePage()),
+    return ListenableBuilder(
+      listenable: RNodes.app,
+      builder: (context, _) {
+        context.setLibL10n();
+        final appL10n = AppLocalizations.of(context);
+        if (appL10n != null) l10n = appL10n;
+        return LayoutBuilder(
+          builder: (context, cons) {
+            final padTop = cons.maxHeight * .16;
+            final pages_ = pages.map((e) => e(context, padTop)).toList();
+            return IntroPage(
+              args: IntroPageArgs(
+                pages: pages_,
+                onDone: (ctx) {
+                  Stores.setting.introVer.put(BuildData.build);
+                  Navigator.of(ctx).pushReplacement(MaterialPageRoute(builder: (_) => _buildHomeWithWindowFrame()));
+                },
+              ),
             );
           },
         );
@@ -28,74 +34,130 @@ final class _IntroPage extends StatelessWidget {
     );
   }
 
-  Widget _buildRecommended(BuildContext context, double padTop) {
+  static Widget _buildAppSettings(BuildContext ctx, double padTop) {
     return ListView(
       padding: _introListPad,
       children: [
         SizedBox(height: padTop),
-        const Icon(Bootstrap.stars, size: 35),
-        SizedBox(height: padTop),
-        ListTile(
-          leading: const Icon(MingCute.delete_2_fill),
-          title: const Text('rm -r'),
-          subtitle: Text(l10n.sftpRmrDirSummary, style: UIs.textGrey),
-          trailing: StoreSwitch(prop: _setting.sftpRmrDir),
-        ).cardx,
-        ListTile(
-          leading: const Icon(IonIcons.stats_chart, size: _kIconSize),
-          title: Text(l10n.parseContainerStats),
-          subtitle: Text(l10n.parseContainerStatsTip, style: UIs.textGrey),
-          trailing: StoreSwitch(prop: _setting.containerParseStat),
-        ).cardx,
-        ListTile(
-          leading: const Icon(OctIcons.cpu),
-          title: Text('CPU ${l10n.noLineChart}'),
-          subtitle: Text(l10n.cpuViewAsProgressTip, style: UIs.textGrey),
-          trailing: StoreSwitch(prop: _setting.cpuViewAsProgress),
-        ).cardx,
-      ],
-    );
-  }
-
-  Widget _buildAppSettings(BuildContext ctx, double padTop) {
-    return ListView(
-      padding: _introListPad,
-      children: [
-        SizedBox(height: padTop),
-        _buildTitle(l10n.init, big: true),
+        IntroPage.title(text: libL10n.init, big: true),
         SizedBox(height: padTop),
         ListTile(
           leading: const Icon(IonIcons.language),
-          title: Text(l10n.language),
+          title: Text(libL10n.language),
           onTap: () async {
             final selected = await ctx.showPickSingleDialog(
-              title: l10n.language,
+              title: libL10n.language,
               items: AppLocalizations.supportedLocales,
-              name: (p0) => p0.code,
+              display: (p0) => p0.nativeName,
               initial: _setting.locale.fetch().toLocale,
             );
             if (selected != null) {
               _setting.locale.put(selected.code);
-              RNodes.app.build();
+              RNodes.app.notify();
             }
           },
-          trailing: Text(
-            l10n.languageName,
-            style: const TextStyle(fontSize: 15, color: Colors.grey),
-          ),
+          trailing: Text(ctx.localeNativeName, style: const TextStyle(fontSize: 15, color: Colors.grey)),
         ).cardx,
+        ListTile(
+          leading: const Icon(MingCute.delete_2_fill),
+          title: TipText('rm -r', l10n.sftpRmrDirSummary),
+          trailing: StoreSwitch(prop: _setting.sftpRmrDir),
+        ).cardx,
+        ListTile(
+          leading: const Icon(MingCute.chart_line_line, size: _kIconSize),
+          title: TipText('Docker ${l10n.stat}', l10n.parseContainerStatsTip),
+          trailing: StoreSwitch(prop: _setting.containerParseStat),
+        ).cardx,
+        ListTile(
+          leading: const Icon(Bootstrap.alphabet),
+          title: TipText(l10n.letterCache, l10n.letterCacheTip),
+          trailing: StoreSwitch(prop: _setting.letterCache),
+        ).cardx,
+        UIs.height77,
       ],
     );
   }
 
-  Widget _buildTitle(String text, {bool big = false}) {
-    return Center(
-      child: Text(
-        text,
-        style: big
-            ? const TextStyle(fontSize: 41, fontWeight: FontWeight.w500)
-            : UIs.textGrey,
-      ),
+  static Widget _buildBackupPasswordMigration(BuildContext ctx, double padTop) {
+    return ListView(
+      padding: _introListPad,
+      children: [
+        SizedBox(height: padTop),
+        IntroPage.title(text: l10n.backupPassword, big: true),
+        SizedBox(height: padTop * 0.5),
+        Text(
+          l10n.backupTip,
+          style: const TextStyle(fontSize: 16),
+          textAlign: TextAlign.center,
+        ),
+        SizedBox(height: padTop * 0.5),
+        ListTile(
+          leading: const Icon(Icons.lock, color: Colors.orange),
+          title: Text(l10n.backupPassword),
+          subtitle: Text(l10n.backupPasswordTip, style: UIs.textGrey),
+          trailing: const Icon(Icons.keyboard_arrow_right),
+          onTap: () async {
+            final controller = TextEditingController();
+            final result = await ctx.showRoundDialog<bool>(
+              title: l10n.backupPassword,
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(l10n.backupPasswordTip, style: UIs.textGrey),
+                  UIs.height13,
+                  Input(
+                    label: l10n.backupPassword,
+                    controller: controller,
+                    obscureText: true,
+                    onSubmitted: (_) => ctx.pop(true),
+                  ),
+                ],
+              ),
+              actions: Btnx.cancelOk,
+            );
+            if (result == true) {
+              final pwd = controller.text.trim();
+              if (pwd.isNotEmpty) {
+                await SecureStoreProps.bakPwd.write(pwd);
+                ctx.showSnackBar(l10n.backupPasswordSet);
+              }
+            }
+          },
+        ).cardx,
+        SizedBox(height: padTop),
+        Text(
+          'This step is recommended for secure backup functionality.',
+          style: UIs.textGrey,
+          textAlign: TextAlign.center,
+        ),
+        UIs.height77,
+      ],
     );
   }
+
+  static Future<List<IntroPageBuilder>> get builders async {
+    final storedVer = _setting.introVer.fetch();
+    final lastVer = _setting.lastVer.fetch();
+
+    // If user is upgrading from older version and doesn't have backup password set,
+    // show the backup password migration page
+    final hasBackupPwd = (await SecureStoreProps.bakPwd.read())?.isNotEmpty == true;
+    final isUpgrading = lastVer > 0 && storedVer < 2; // lastVer > 0 means not first install
+
+    final builders = _builders.entries
+        .where((e) {
+          if (e.key == 2 && (!isUpgrading || hasBackupPwd)) {
+            return false; // Skip backup password migration if not upgrading or already has password
+          }
+          return e.key > storedVer;
+        })
+        .map((e) => e.value)
+        .toList();
+
+    return builders;
+  }
+
+  static final _setting = Stores.setting;
+  static const _kIconSize = 23.0;
+  static const _introListPad = EdgeInsets.symmetric(horizontal: 17);
 }

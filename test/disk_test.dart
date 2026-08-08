@@ -4,27 +4,446 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:server_box/data/model/server/disk.dart';
 
 void main() {
-  test('parse disk', () {
-    for (final raw in _raws) {
-      print('---' * 10);
-      final disks = Disk.parse(raw);
-      print(disks.join('\n'));
-      print('\n');
-    }
+  group('Disk parsing', () {
+    test('parse traditional df output', () {
+      for (final raw in _raws) {
+        final disks = Disk.parse(raw);
+        expect(disks, isNotEmpty);
+      }
+    });
+
+    test('parse lsblk JSON output', () {
+      final disks = Disk.parse(_jsonLsblkOutput);
+      expect(disks, isNotEmpty);
+      expect(disks.length, 6); // Should find ext4 root, vfat efi, and ext2 boot
+
+      // Verify root filesystem
+      final rootFs = disks.firstWhere((disk) => disk.mount == '/');
+      expect(rootFs.fsTyp, 'ext4');
+      expect(rootFs.size, BigInt.parse('982141468672') ~/ BigInt.from(1024));
+      expect(rootFs.used, BigInt.parse('552718364672') ~/ BigInt.from(1024));
+      expect(rootFs.avail, BigInt.parse('379457622016') ~/ BigInt.from(1024));
+      expect(rootFs.usedPercent, 56);
+
+      // Verify boot/efi filesystem
+      final efiFs = disks.firstWhere((disk) => disk.mount == '/boot/efi');
+      expect(efiFs.fsTyp, 'vfat');
+      expect(efiFs.size, BigInt.parse('535805952') ~/ BigInt.from(1024));
+      expect(efiFs.usedPercent, 1);
+
+      // Verify boot filesystem
+      final bootFs = disks.firstWhere((disk) => disk.mount == '/boot');
+      expect(bootFs.fsTyp, 'ext2');
+      expect(bootFs.usedPercent, 34);
+    });
+
+    test('parse nested lsblk JSON output falls back to child filesystems', () {
+      final disks = Disk.parse(_nestedJsonLsblkOutput);
+      expect(disks, isNotEmpty);
+
+      expect(disks.any((disk) => disk.path == '/dev/nvme0n1'), isFalse);
+
+      // Check first valid child filesystem
+      final rootPartition = disks.firstWhere((disk) => disk.mount == '/');
+      expect(rootPartition.fsTyp, 'ext4');
+      expect(rootPartition.path, '/dev/nvme0n1p2');
+      expect(rootPartition.usedPercent, 45);
+
+      // Verify we have a child partition with UUID
+      final bootPartition = disks.firstWhere((disk) => disk.mount == '/boot');
+      expect(bootPartition.uuid, '12345678-abcd-1234-abcd-1234567890ab');
+    });
+
+    test('preserves all descendants for intermediate containers', () {
+      final disks = Disk.parse(_nestedContainerJsonLsblkOutput);
+      expect(disks, hasLength(1));
+
+      final vg = disks.first;
+      expect(vg.path, '/dev/mapper/vg-root');
+      expect(vg.children, hasLength(2));
+      expect(
+        vg.children.map((disk) => disk.mount),
+        containsAll(['/', '/home']),
+      );
+
+      final usage = DiskUsage.parse(disks);
+      expect(usage.size, BigInt.from(3000));
+      expect(usage.used, BigInt.from(1500));
+    });
+
+    test('DiskUsage does not double-count parent and child filesystems', () {
+      final usage = DiskUsage.parse([
+        Disk(
+          path: '/dev/sda1',
+          mount: '/',
+          usedPercent: 50,
+          used: BigInt.from(100),
+          size: BigInt.from(200),
+          avail: BigInt.from(100),
+          children: [
+            Disk(
+              path: '/dev/sda1-child',
+              mount: '/child',
+              usedPercent: 50,
+              used: BigInt.from(1000),
+              size: BigInt.from(2000),
+              avail: BigInt.from(1000),
+            ),
+          ],
+        ),
+      ]);
+
+      expect(usage.used, BigInt.from(100));
+      expect(usage.size, BigInt.from(200));
+    });
+
+    test('DiskUsage handles zero size correctly', () {
+      final usage = DiskUsage(used: BigInt.from(1000), size: BigInt.zero);
+      expect(usage.usedPercent, 0); // Should return 0 instead of throwing
+    });
+
+    test('DiskUsage handles null kname', () {
+      final disks = [
+        Disk(
+          path: '/dev/sda1',
+          mount: '/mnt',
+          usedPercent: 50,
+          used: BigInt.from(5000),
+          size: BigInt.from(10000),
+          avail: BigInt.from(5000),
+          kname: null, // Explicitly null kname
+        ),
+      ];
+
+      final usage = DiskUsage.parse(disks);
+      expect(usage.used, BigInt.from(5000));
+      expect(usage.size, BigInt.from(10000));
+      expect(usage.usedPercent, 50);
+      // This would use the "unknown" fallback for kname
+    });
+
+    test('parse df -k output (fallback mode)', () {
+      final disks = Disk.parse(_dfOutput);
+      expect(disks, isNotEmpty);
+      expect(
+        disks.length,
+        3,
+      ); // Should find 3 valid filesystems: udev, /dev/vda3, /dev/vda2
+
+      // Verify root filesystem
+      final rootFs = disks.firstWhere((disk) => disk.mount == '/');
+      expect(rootFs.path, '/dev/vda3');
+      expect(rootFs.usedPercent, 47);
+      expect(
+        rootFs.size,
+        BigInt.from(40910528 ~/ 1024),
+      ); // df -k output divided by 1024 = MB
+      expect(rootFs.used, BigInt.from(18067948 ~/ 1024));
+      expect(rootFs.avail, BigInt.from(20951380 ~/ 1024));
+
+      // Verify boot/efi filesystem
+      final efiFs = disks.firstWhere((disk) => disk.mount == '/boot/efi');
+      expect(efiFs.path, '/dev/vda2');
+      expect(efiFs.usedPercent, 7);
+      expect(efiFs.size, BigInt.from(192559 ~/ 1024));
+
+      // Verify udev filesystem is included (virtual filesystem)
+      final udevFs = disks.firstWhere((disk) => disk.path == 'udev');
+      expect(udevFs.mount, '/dev');
+      expect(udevFs.usedPercent, 0);
+      expect(udevFs.size, BigInt.from(864088 ~/ 1024));
+    });
+
+    test('handle empty input gracefully', () {
+      final disks = Disk.parse('');
+      expect(disks, isEmpty);
+    });
+
+    test('handle whitespace-only input', () {
+      final disks = Disk.parse('   \n\t  \r\n  ');
+      expect(disks, isEmpty);
+    });
+
+    test('handle JSON with null filesystem fields', () {
+      final disks = Disk.parse(_jsonWithNullFields);
+      expect(disks, isNotEmpty);
+
+      // Should handle null filesystem fields gracefully
+      final disk = disks.firstWhere((disk) => disk.mount == '/');
+      expect(disk.size, BigInt.zero);
+      expect(disk.used, BigInt.zero);
+      expect(disk.avail, BigInt.zero);
+      expect(disk.usedPercent, 0);
+    });
+
+    test('handle JSON with string "null" values', () {
+      final disks = Disk.parse(_jsonWithStringNulls);
+      expect(disks, isNotEmpty);
+
+      // Should handle string "null" filesystem fields gracefully
+      final disk = disks.firstWhere((disk) => disk.mount == '/');
+      expect(disk.size, BigInt.zero);
+      expect(disk.used, BigInt.zero);
+      expect(disk.avail, BigInt.zero);
+      expect(disk.usedPercent, 0);
+    });
+
+    test('handle JSON with empty string values', () {
+      final disks = Disk.parse(_jsonWithEmptyStrings);
+      expect(disks, isNotEmpty);
+
+      // Should handle empty string filesystem fields gracefully
+      final disk = disks.firstWhere((disk) => disk.mount == '/');
+      expect(disk.size, BigInt.zero);
+      expect(disk.used, BigInt.zero);
+      expect(disk.avail, BigInt.zero);
+      expect(disk.usedPercent, 0);
+    });
+
+    test('handle JSON with invalid percentage format', () {
+      final disks = Disk.parse(_jsonWithInvalidPercent);
+      expect(disks, isNotEmpty);
+
+      // Should handle invalid percentage gracefully
+      final disk = disks.firstWhere((disk) => disk.mount == '/');
+      expect(disk.usedPercent, 0);
+    });
+
+    test('handle JSON with malformed numbers', () {
+      final disks = Disk.parse(_jsonWithMalformedNumbers);
+      expect(disks, isNotEmpty);
+
+      // Should handle malformed numbers gracefully
+      final disk = disks.firstWhere((disk) => disk.mount == '/');
+      expect(disk.size, BigInt.zero);
+      expect(disk.used, BigInt.zero);
+      expect(disk.avail, BigInt.zero);
+    });
+
+    test('handle JSON parsing errors gracefully', () {
+      final disks = Disk.parse(_malformedJson);
+      expect(
+        disks,
+        isEmpty,
+      ); // Should fallback to legacy method, which also fails
+    });
+
+    test('handle df output with missing fields', () {
+      final disks = Disk.parse(_dfWithMissingFields);
+      expect(disks, isNotEmpty);
+
+      // Should handle missing fields gracefully
+      final disk = disks.firstWhere((disk) => disk.mount == '/');
+      expect(disk.usedPercent, 47);
+    });
+
+    test('handle df output with inconsistent formatting', () {
+      final disks = Disk.parse(_dfWithInconsistentFormatting);
+      expect(disks, isNotEmpty);
+
+      // Should handle inconsistent formatting
+      expect(disks.length, greaterThan(0));
+    });
+
+    test('handle lsblk with success marker', () {
+      final disks = Disk.parse(_lsblkWithSuccessMarker);
+      expect(disks, isNotEmpty);
+
+      // Should parse JSON and ignore success marker
+      final rootFs = disks.firstWhere((disk) => disk.mount == '/');
+      expect(rootFs.fsTyp, 'ext4');
+      expect(rootFs.usedPercent, 56);
+    });
+
+    test('handle malformed lsblk output fallback', () {
+      final disks = Disk.parse(_malformedLsblkWithDfFallback);
+      expect(disks, isNotEmpty);
+
+      // Should fallback to df -k parsing when lsblk output is malformed
+      expect(disks.length, 3);
+    });
   });
 }
 
+const _jsonLsblkOutput = '''
+{
+   "blockdevices": [
+      {
+         "fstype": "LVM2_member",
+         "mountpoint": null,
+         "fssize": null,
+         "fsused": null,
+         "fsavail": null,
+         "fsuse%": null
+      },{
+         "fstype": "ext4",
+         "mountpoint": "/",
+         "fssize": 982141468672,
+         "fsused": 552718364672,
+         "fsavail": 379457622016,
+         "fsuse%": "56%"
+      },{
+         "fstype": "swap",
+         "mountpoint": "[SWAP]",
+         "fssize": null,
+         "fsused": null,
+         "fsavail": null,
+         "fsuse%": null
+      },{
+         "fstype": null,
+         "mountpoint": null,
+         "fssize": null,
+         "fsused": null,
+         "fsavail": null,
+         "fsuse%": null
+      },{
+         "fstype": "vfat",
+         "mountpoint": "/boot/efi",
+         "fssize": 535805952,
+         "fsused": 6127616,
+         "fsavail": 529678336,
+         "fsuse%": "1%"
+      },{
+         "fstype": "ext2",
+         "mountpoint": "/boot",
+         "fssize": 477210624,
+         "fsused": 161541120,
+         "fsavail": 290084864,
+         "fsuse%": "34%"
+      },{
+         "fstype": "crypto_LUKS",
+         "mountpoint": null,
+         "fssize": null,
+         "fsused": null,
+         "fsavail": null,
+         "fsuse%": null
+      }
+   ]
+}
+''';
+
+const _nestedJsonLsblkOutput = '''
+{
+  "blockdevices": [
+    {
+      "name": "nvme0n1",
+      "kname": "nvme0n1",
+      "path": "/dev/nvme0n1",
+      "fstype": null,
+      "mountpoint": null,
+      "fssize": null,
+      "fsused": null,
+      "fsavail": null,
+      "fsuse%": null,
+      "children": [
+        {
+          "name": "nvme0n1p1",
+          "kname": "nvme0n1p1",
+          "path": "/dev/nvme0n1p1",
+          "fstype": "vfat",
+          "mountpoint": "/boot/efi",
+          "fssize": "512000000",
+          "fsused": "25600000",
+          "fsavail": "486400000",
+          "fsuse%": "5%",
+          "uuid": "98765432-dcba-4321-dcba-0987654321fe"
+        },
+        {
+          "name": "nvme0n1p2",
+          "kname": "nvme0n1p2",
+          "path": "/dev/nvme0n1p2",
+          "fstype": "ext4",
+          "mountpoint": "/",
+          "fssize": "500000000000",
+          "fsused": "225000000000",
+          "fsavail": "275000000000",
+          "fsuse%": "45%",
+          "uuid": "abcdef12-3456-7890-abcd-ef1234567890"
+        },
+        {
+          "name": "nvme0n1p3",
+          "kname": "nvme0n1p3",
+          "path": "/dev/nvme0n1p3",
+          "fstype": "ext4",
+          "mountpoint": "/boot",
+          "fssize": "1000000000",
+          "fsused": "500000000",
+          "fsavail": "500000000",
+          "fsuse%": "50%",
+          "uuid": "12345678-abcd-1234-abcd-1234567890ab"
+        }
+      ]
+    }
+  ]
+}
+''';
+
+const _nestedContainerJsonLsblkOutput = '''
+{
+  "blockdevices": [
+    {
+      "name": "sda",
+      "kname": "sda",
+      "path": "/dev/sda",
+      "fstype": null,
+      "mountpoint": null,
+      "fssize": null,
+      "fsused": null,
+      "fsavail": null,
+      "fsuse%": null,
+      "children": [
+        {
+          "name": "vg-root",
+          "kname": "dm-0",
+          "path": "/dev/mapper/vg-root",
+          "fstype": null,
+          "mountpoint": null,
+          "fssize": null,
+          "fsused": null,
+          "fsavail": null,
+          "fsuse%": null,
+          "children": [
+            {
+              "name": "root",
+              "kname": "dm-1",
+              "path": "/dev/mapper/root",
+              "fstype": "ext4",
+              "mountpoint": "/",
+              "fssize": "1024000",
+              "fsused": "512000",
+              "fsavail": "512000",
+              "fsuse%": "50%"
+            },
+            {
+              "name": "home",
+              "kname": "dm-2",
+              "path": "/dev/mapper/home",
+              "fstype": "ext4",
+              "mountpoint": "/home",
+              "fssize": "2048000",
+              "fsused": "1024000",
+              "fsavail": "1024000",
+              "fsuse%": "50%"
+            }
+          ]
+        }
+      ]
+    }
+  ]
+}
+''';
+
 const _raws = [
-//   '''
-// Filesystem     1K-blocks     Used Available Use% Mounted on
-// udev              864088        0    864088   0% /dev
-// tmpfs             176724      688    176036   1% /run
-// /dev/vda3       40910528 18067948  20951380  47% /
-// tmpfs             883612        0    883612   0% /dev/shm
-// tmpfs               5120        0      5120   0% /run/lock
-// /dev/vda2         192559    11807    180752   7% /boot/efi
-// tmpfs             176720      104    176616   1% /run/user/1000
-// ''',
+  //   '''
+  // Filesystem     1K-blocks     Used Available Use% Mounted on
+  // udev              864088        0    864088   0% /dev
+  // tmpfs             176724      688    176036   1% /run
+  // /dev/vda3       40910528 18067948  20951380  47% /
+  // tmpfs             883612        0    883612   0% /dev/shm
+  // tmpfs               5120        0      5120   0% /run/lock
+  // /dev/vda2         192559    11807    180752   7% /boot/efi
+  // tmpfs             176720      104    176616   1% /run/user/1000
+  // ''',
   '''
 Filesystem                                                   1K-blocks        Used   Available Use% Mounted on
 udev                                                          16181648           0    16181648   0% /dev
@@ -95,3 +514,151 @@ overlay                                                     1907116416      5470
 v2000pro/pve                                                1906694784      125440  1906569344   1% /mnt/v2000pro/pve
 v2000pro/download                                           1906569472         128  1906569344   1% /mnt/v2000pro/download''',
 ];
+
+const _dfOutput = '''
+Filesystem     1K-blocks     Used Available Use% Mounted on
+udev              864088        0    864088   0% /dev
+tmpfs             176724      688    176036   1% /run
+/dev/vda3       40910528 18067948  20951380  47% /
+tmpfs             883612        0    883612   0% /dev/shm
+tmpfs               5120        0      5120   0% /run/lock
+/dev/vda2         192559    11807    180752   7% /boot/efi
+tmpfs             176720      104    176616   1% /run/user/1000
+''';
+
+// Test data for edge cases
+const _jsonWithNullFields = '''
+{
+  "blockdevices": [
+    {
+      "fstype": "ext4",
+      "mountpoint": "/",
+      "fssize": null,
+      "fsused": null,
+      "fsavail": null,
+      "fsuse%": null,
+      "path": "/dev/sda1"
+    }
+  ]
+}
+''';
+
+const _jsonWithStringNulls = '''
+{
+  "blockdevices": [
+    {
+      "fstype": "ext4",
+      "mountpoint": "/",
+      "fssize": "null",
+      "fsused": "null",
+      "fsavail": "null",
+      "fsuse%": "null",
+      "path": "/dev/sda1"
+    }
+  ]
+}
+''';
+
+const _jsonWithEmptyStrings = '''
+{
+  "blockdevices": [
+    {
+      "fstype": "ext4",
+      "mountpoint": "/",
+      "fssize": "",
+      "fsused": "",
+      "fsavail": "",
+      "fsuse%": "",
+      "path": "/dev/sda1"
+    }
+  ]
+}
+''';
+
+const _jsonWithInvalidPercent = '''
+{
+  "blockdevices": [
+    {
+      "fstype": "ext4",
+      "mountpoint": "/",
+      "fssize": "1000000",
+      "fsused": "500000",
+      "fsavail": "500000",
+      "fsuse%": "invalid_percent",
+      "path": "/dev/sda1"
+    }
+  ]
+}
+''';
+
+const _jsonWithMalformedNumbers = '''
+{
+  "blockdevices": [
+    {
+      "fstype": "ext4",
+      "mountpoint": "/",
+      "fssize": "not_a_number",
+      "fsused": "invalid",
+      "fsavail": "broken",
+      "fsuse%": "50%",
+      "path": "/dev/sda1"
+    }
+  ]
+}
+''';
+
+const _malformedJson = '''
+{
+  "blockdevices": [
+    {
+      "fstype": "ext4",
+      "mountpoint": "/",
+      "fssize": "1000000",
+      "fsused": "500000",
+      "fsavail": "500000",
+      "fsuse%": "50%",
+      "path": "/dev/sda1"
+    }
+  ]
+  // Missing closing brace and malformed structure
+''';
+
+const _dfWithMissingFields = '''
+Filesystem     1K-blocks     Used Available Use% Mounted on
+/dev/vda3       40910528 18067948  20951380  47% /
+''';
+
+const _dfWithInconsistentFormatting = '''
+Filesystem    1K-blocks    Used    Available   Use%   Mounted on
+/dev/sda1     1000000      500000  500000      50%    /
+/dev/sda2     2000000      1000000 1000000     50%    /home
+   udev       864088       0       864088      0%     /dev
+''';
+
+const _lsblkWithSuccessMarker = '''
+{
+  "blockdevices": [
+    {
+      "fstype": "ext4",
+      "mountpoint": "/",
+      "fssize": 982141468672,
+      "fsused": 552718364672,
+      "fsavail": 379457622016,
+      "fsuse%": "56%",
+      "path": "/dev/sda1"
+    }
+  ]
+}
+LSBLK_SUCCESS
+''';
+
+const _malformedLsblkWithDfFallback = '''
+Filesystem     1K-blocks     Used Available Use% Mounted on
+udev              864088        0    864088   0% /dev
+tmpfs             176724      688    176036   1% /run
+/dev/vda3       40910528 18067948  20951380  47% /
+tmpfs             883612        0    883612   0% /dev/shm
+tmpfs               5120        0      5120   0% /run/lock
+/dev/vda2         192559    11807    180752   7% /boot/efi
+tmpfs             176720      104    176616   1% /run/user/1000
+''';

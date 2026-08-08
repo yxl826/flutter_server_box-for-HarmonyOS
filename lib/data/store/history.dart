@@ -1,5 +1,5 @@
 import 'package:fl_lib/fl_lib.dart';
-import 'package:hive_flutter/hive_flutter.dart';
+import 'package:hive_ce_flutter/hive_flutter.dart';
 
 /// index from 0 -> n : latest -> oldest
 class _ListHistory {
@@ -7,21 +7,23 @@ class _ListHistory {
   final String _name;
   final Box _box;
 
-  _ListHistory({
-    required Box box,
-    required String name,
-  })  : _box = box,
-        _name = name,
-        _history = box.get(name, defaultValue: [])!;
+  _ListHistory({required Box box, required String name})
+    : _box = box,
+      _name = name,
+      _history = box.get(name, defaultValue: [])!;
 
   void add(String path) {
     _history.remove(path);
     _history.insert(0, path);
     _box.put(_name, _history);
-    _box.updateLastModified();
   }
 
   List get all => _history;
+
+  void clear() {
+    _history.clear();
+    _box.put(_name, _history);
+  }
 }
 
 class _MapHistory {
@@ -29,32 +31,31 @@ class _MapHistory {
   final String _name;
   final Box _box;
 
-  _MapHistory({
-    required Box box,
-    required String name,
-  })  : _box = box,
-        _name = name,
-        _history = box.get(name, defaultValue: <dynamic, dynamic>{})!;
+  _MapHistory({required Box box, required String name})
+    : _box = box,
+      _name = name,
+      _history = box.get(name, defaultValue: <dynamic, dynamic>{})!;
 
   void put(String id, String val) {
     _history[id] = val;
     _box.put(_name, _history);
-    _box.updateLastModified();
   }
 
   String? fetch(String id) => _history[id];
 }
 
-class HistoryStore extends PersistentStore {
-  HistoryStore() : super('history');
+class HistoryStore extends HiveStore {
+  HistoryStore._() : super('history');
 
-  /// Paths that user has visited by 'Locate' button
+  static final instance = HistoryStore._();
+
   late final sftpGoPath = _ListHistory(box: box, name: 'sftpPath');
 
   late final sftpLastPath = _MapHistory(box: box, name: 'sftpLastPath');
 
   late final sshCmds = _ListHistory(box: box, name: 'sshCmds');
 
-  /// Notify users that this app will write script to server to works properly
-  late final writeScriptTipShown = property('writeScriptTipShown', false);
+  late final sshServerHistory = _ListHistory(box: box, name: 'sshServerHistory');
+
+  late final writeScriptTipShown = propertyDefault('writeScriptTipShown', false);
 }

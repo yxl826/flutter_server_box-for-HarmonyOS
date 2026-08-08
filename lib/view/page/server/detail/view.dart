@@ -2,191 +2,232 @@ import 'package:extended_image/extended_image.dart';
 import 'package:fl_chart/fl_chart.dart';
 import 'package:fl_lib/fl_lib.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter_markdown/flutter_markdown.dart';
+import 'package:flutter_markdown_plus/flutter_markdown_plus.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:flutter_svg/flutter_svg.dart';
 import 'package:icons_plus/icons_plus.dart';
-import 'package:provider/provider.dart';
 import 'package:server_box/core/extension/context/locale.dart';
+import 'package:server_box/core/extension/server.dart';
+import 'package:server_box/core/route.dart';
+import 'package:server_box/data/model/app/scripts/cmd_types.dart';
 import 'package:server_box/data/model/app/server_detail_card.dart';
-import 'package:server_box/data/model/app/shell_func.dart';
+import 'package:server_box/data/model/server/amd.dart';
 import 'package:server_box/data/model/server/battery.dart';
 import 'package:server_box/data/model/server/cpu.dart';
 import 'package:server_box/data/model/server/disk.dart';
-import 'package:server_box/data/model/server/dist.dart';
+import 'package:server_box/data/model/server/disk_smart.dart';
 import 'package:server_box/data/model/server/net_speed.dart';
 import 'package:server_box/data/model/server/nvdia.dart';
 import 'package:server_box/data/model/server/sensors.dart';
+import 'package:server_box/data/model/server/server.dart' as server_model;
 import 'package:server_box/data/model/server/server_private_info.dart';
 import 'package:server_box/data/model/server/system.dart';
+import 'package:server_box/data/provider/server/single.dart';
 import 'package:server_box/data/res/store.dart';
+import 'package:server_box/view/page/pve.dart';
+import 'package:server_box/view/page/server/edit/edit.dart';
 import 'package:server_box/view/widget/server_func_btns.dart';
-
-import '../../../../core/route.dart';
-import '../../../../data/model/server/server.dart';
-import '../../../../data/provider/server.dart';
 
 part 'misc.dart';
 
-class ServerDetailPage extends StatefulWidget {
-  const ServerDetailPage({super.key, required this.spi});
-
-  final ServerPrivateInfo spi;
+class ServerDetailPage extends ConsumerStatefulWidget {
+  final SpiRequiredArgs args;
+  const ServerDetailPage({super.key, required this.args});
 
   @override
-  State<ServerDetailPage> createState() => _ServerDetailPageState();
+  ConsumerState<ServerDetailPage> createState() => _ServerDetailPageState();
+
+  static const route = AppRouteArg(
+    page: ServerDetailPage.new,
+    path: '/servers/detail',
+  );
 }
 
-class _ServerDetailPageState extends State<ServerDetailPage>
+class _ServerDetailPageState extends ConsumerState<ServerDetailPage>
     with SingleTickerProviderStateMixin {
-  late final _cardBuildMap = Map.fromIterables(
-    ServerDetailCards.names,
-    [
-      _buildAbout,
-      _buildCPUView,
-      _buildMemView,
-      _buildSwapView,
-      _buildGpuView,
-      _buildDiskView,
-      _buildNetView,
-      _buildSensors,
-      _buildTemperature,
-      _buildBatteries,
-      _buildPve,
-      _buildCustom,
-    ],
-  );
+  late final _cardBuildMap = Map.fromIterables(ServerDetailCards.names, [
+    _buildAbout,
+    _buildCPUView,
+    _buildMemView,
+    _buildSwapView,
+    _buildGpuView,
+    _buildDiskView,
+    _buildDiskSmart,
+    _buildNetView,
+    _buildSensors,
+    _buildTemperature,
+    _buildBatteries,
+    _buildPve,
+    _buildCustomCmd,
+  ]);
 
-  late MediaQueryData _media;
+  late Size _size;
   final List<String> _cardsOrder = [];
 
+  final _settings = Stores.setting;
   final _netSortType = ValueNotifier(_NetSortType.device);
-  late final _collapse = Stores.setting.collapseUIDefault.fetch();
-  late final _textFactor = TextScaler.linear(Stores.setting.textFactor.fetch());
+  late final _collapse = _settings.collapseUIDefault.fetch();
+  late final _textFactor = TextScaler.linear(_settings.textFactor.fetch());
+  late final _cpuViewAsProgress = _settings.cpuViewAsProgress.fetch();
+  late final _moveServerFuncs = _settings.moveServerFuncs.fetch();
+  late final _displayCpuIndex = _settings.displayCpuIndex.fetch();
+
+  @override
+  void dispose() {
+    super.dispose();
+    _netSortType.dispose();
+  }
 
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    _media = MediaQuery.of(context);
+    _size = MediaQuery.sizeOf(context);
   }
 
   @override
   void initState() {
     super.initState();
-    final order = Stores.setting.detailCardOrder.fetch();
-    order.removeWhere((e) => !ServerDetailCards.names.contains(e));
+    final order = _settings.detailCardOrder.fetch();
+    final disabled = _settings.detailCardDisabled.fetch();
+    order.removeWhere(
+      (e) => !ServerDetailCards.names.contains(e) || disabled.contains(e),
+    );
     _cardsOrder.addAll(order);
   }
 
   @override
   Widget build(BuildContext context) {
-    return Consumer<ServerProvider>(builder: (_, provider, __) {
-      final s = widget.spi.server;
-      if (s == null) {
-        return Scaffold(
-          body: Center(
-            child: Text(l10n.noClient),
-          ),
-        );
-      }
-      return _buildMainPage(s);
-    });
+    final serverState = ref.watch(serverProvider(widget.args.spi.id));
+    if (serverState.client == null) {
+      return Scaffold(
+        appBar: CustomAppBar(),
+        body: Center(child: Text(libL10n.empty)),
+      );
+    }
+    return _buildMainPage(serverState);
   }
 
-  Widget _buildMainPage(Server si) {
-    final buildFuncs = !Stores.setting.moveOutServerTabFuncBtns.fetch();
-    final logoUrl = si.spi.custom?.logoUrl ??
-        Stores.setting.serverLogoUrl.fetch().selfIfNotNullEmpty;
-    final buildLogo = logoUrl != null;
-    final children = [
-      if (buildLogo)
-        _buildLogo(logoUrl, si.status.more[StatusCmdType.sys]?.dist),
-      if (buildFuncs) ServerFuncBtns(spi: widget.spi),
+  Widget _buildMainPage(ServerState si) {
+    final buildFuncs = !_moveServerFuncs;
+    final logo = _buildLogo(si);
+    final children = <Widget>[
+      ?logo,
+      if (buildFuncs) ServerFuncBtns(spi: si.spi),
     ];
     for (final card in _cardsOrder) {
-      final buildFunc = _cardBuildMap[card];
-      if (buildFunc != null) {
-        children.add(buildFunc(si.status));
+      final child = _cardBuildMap[card]?.call(si);
+      if (child != null) {
+        children.add(child);
       }
     }
+
     return Scaffold(
       appBar: _buildAppBar(si),
-      body: ListView(
-        padding: EdgeInsets.only(
-          left: 13,
-          right: 13,
-          bottom: _media.padding.bottom + 77,
-        ),
-        children: children,
-      ),
+      body: SafeArea(child: AutoMultiList(children: children)),
     );
   }
 
-  CustomAppBar _buildAppBar(Server si) {
+  CustomAppBar _buildAppBar(ServerState si) {
     return CustomAppBar(
-      title: Text(si.spi.name, style: UIs.text18),
+      title: Text(
+        si.spi.name,
+        style: TextStyle(
+          fontSize: 20,
+          color: context.isDark ? Colors.white : Colors.black,
+        ),
+      ),
       actions: [
+        QrShareBtn(
+          data: si.spi.toJsonString(),
+          tip: si.spi.name,
+          tip2: '${libL10n.server} ~ ServerBox',
+        ),
         IconButton(
           icon: const Icon(Icons.edit),
           onPressed: () async {
-            final delete = await AppRoutes.serverEdit(spi: si.spi).go(context);
+            final delete = await ServerEditPage.route.go(
+              context,
+              args: SpiRequiredArgs(si.spi),
+            );
             if (delete == true) {
               context.pop();
             }
           },
-        )
+        ),
       ],
     );
   }
 
-  Widget _buildLogo(String logoUrl, Dist? dist) {
-    if (dist != null) {
-      logoUrl = logoUrl
-          .replaceFirst('{DIST}', dist.name)
-          .replaceFirst('{BRIGHT}', context.isDark ? 'dark' : 'light');
-    }
+  Widget? _buildLogo(ServerState si) {
+    final logoUrl = si.getLogoUrl(context);
+
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 13),
-      child: ExtendedImage.network(
-        logoUrl,
-        cache: true,
-        height: _media.size.height * 0.2,
+      child: LayoutBuilder(
+        builder: (_, cons) {
+          if (logoUrl == null) {
+            return UIs.placeholder;
+          }
+          final height = cons.maxWidth * 0.3;
+          if (logoUrl.isSvgUrl) {
+            return SvgPicture.network(
+              logoUrl,
+              height: height,
+              width: cons.maxWidth,
+              fit: BoxFit.contain,
+            );
+          }
+          return ExtendedImage.network(
+            logoUrl,
+            cache: true,
+            height: height,
+            width: cons.maxWidth,
+          );
+        },
       ),
     );
   }
 
-  Widget _buildAbout(ServerStatus ss) {
-    return CardX(
-      child: ExpandTile(
-        leading: const Icon(MingCute.information_fill, size: 20),
-        initiallyExpanded: _getInitExpand(ss.more.entries.length),
-        title: Text(l10n.about),
-        childrenPadding: const EdgeInsets.symmetric(
-          horizontal: 17,
-          vertical: 11,
-        ),
-        children: ss.more.entries
-            .map(
-              (e) => Padding(
-                padding: const EdgeInsets.symmetric(vertical: 2),
-                child: Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    Text(e.key.i18n, style: UIs.text13),
-                    Text(e.value, style: UIs.text13Grey)
-                  ],
-                ),
+  Widget? _buildAbout(ServerState si) {
+    final ss = si.status;
+    return ExpandTile(
+      key: ValueKey(ss.more.hashCode), // Use hashCode to avoid perf issue
+      leading: const Icon(MingCute.information_fill, size: 20),
+      initiallyExpanded: _getInitExpand(ss.more.entries.length),
+      title: Text(libL10n.about),
+      childrenPadding: const EdgeInsets.symmetric(horizontal: 17, vertical: 11),
+      children: ss.more.entries
+          .map(
+            (e) => Padding(
+              padding: const EdgeInsets.symmetric(vertical: 2),
+              child: Row(
+                mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                children: [
+                  Text(
+                    e.key.i18n,
+                    style: UIs.text13,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  Text(
+                    e.value,
+                    style: UIs.text13Grey,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ],
               ),
-            )
-            .toList(),
-      ),
-    );
+            ),
+          )
+          .toList(),
+    ).cardx;
   }
 
-  Widget _buildCPUView(ServerStatus ss) {
+  Widget? _buildCPUView(ServerState si) {
+    final ss = si.status;
     final percent = ss.cpu.usedPercent(coreIdx: 0).toInt();
     final details = [
       _buildDetailPercent(ss.cpu.user, 'user'),
       UIs.width13,
-      _buildDetailPercent(ss.cpu.idle, 'idle')
+      _buildDetailPercent(ss.cpu.idle, 'idle'),
     ];
     if (ss.system == SystemType.linux) {
       details.addAll([
@@ -197,41 +238,59 @@ class _ServerDetailPageState extends State<ServerDetailPage>
       ]);
     }
 
-    return CardX(
-      child: ExpandTile(
-        title: Align(
-          alignment: Alignment.centerLeft,
-          child: _buildAnimatedText(
-            ValueKey(percent),
-            '$percent%',
-            UIs.text27,
-          ),
-        ),
-        childrenPadding: const EdgeInsets.symmetric(vertical: 13),
-        initiallyExpanded: _getInitExpand(1),
-        trailing: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: details,
-        ),
-        children: Stores.setting.cpuViewAsProgress.fetch()
-            ? _buildCPUProgress(ss.cpu)
-            : [
-                Padding(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 17, vertical: 13),
-                  child: SizedBox(
-                    height: 137,
-                    width: _media.size.width - 26 - 34,
-                    child: _buildLineChart(
-                      ss.cpu.spots,
-                      //ss.cpu.rangeX,
-                      tooltipPrefix: 'CPU',
-                    ),
-                  ),
-                ),
-              ],
+    final List<Widget> children = _cpuViewAsProgress
+        ? _buildCPUProgress(ss.cpu)
+        : [_buildCPUChart(ss)];
+
+    if (ss.cpu.brand.isNotEmpty) {
+      children.add(
+        Column(
+          children: ss.cpu.brand.entries.map(_buildCpuModelItem).toList(),
+        ).paddingOnly(top: 13),
+      );
+    }
+
+    return ExpandTile(
+      title: Align(
+        alignment: Alignment.centerLeft,
+        child: _buildAnimatedText(ValueKey(percent), '$percent%', UIs.text27),
       ),
+      childrenPadding: const EdgeInsets.symmetric(vertical: 13),
+      initiallyExpanded: _getInitExpand(1),
+      trailing: Row(mainAxisSize: MainAxisSize.min, children: details),
+      children: children,
+    ).cardx;
+  }
+
+  Widget _buildCpuModelItem(MapEntry<String, int> e) {
+    final name = e.key
+        .replaceFirst('Intel(R)', '')
+        .replaceFirst('AMD', '')
+        .replaceFirst('with Radeon Graphics', '');
+    final child = Row(
+      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      children: [
+        LayoutBuilder(
+          builder: (_, cons) {
+            return ConstrainedBox(
+              constraints: BoxConstraints(maxWidth: cons.maxWidth * .7),
+              child: Text(
+                name,
+                style: UIs.text13,
+                overflow: TextOverflow.ellipsis,
+                maxLines: 1,
+              ),
+            );
+          },
+        ),
+        Text(
+          'x ${e.value}',
+          style: UIs.text13Grey,
+          overflow: TextOverflow.clip,
+        ),
+      ],
     );
+    return child.paddingSymmetric(horizontal: 17);
   }
 
   Widget _buildDetailPercent(double percent, String timeType) {
@@ -245,11 +304,7 @@ class _ServerDetailPageState extends State<ServerDetailPage>
           style: UIs.text12,
           textScaler: _textFactor,
         ),
-        Text(
-          timeType,
-          style: UIs.text12Grey,
-          textScaler: _textFactor,
-        ),
+        Text(timeType, style: UIs.text12Grey, textScaler: _textFactor),
       ],
     );
   }
@@ -257,41 +312,47 @@ class _ServerDetailPageState extends State<ServerDetailPage>
   List<Widget> _buildCPUProgress(Cpus cs) {
     const kMaxColumn = 2;
     const kRowThreshold = 4;
-    const kCoresCount = kMaxColumn * kRowThreshold;
+    const kCoresCountThreshold = kMaxColumn * kRowThreshold;
     final children = <Widget>[];
+    final displayCpuIndexSetting = _displayCpuIndex;
 
-    if (cs.coresCount > kCoresCount) {
-      final rows = cs.coresCount ~/ kMaxColumn;
-      for (var i = 0; i < rows; i++) {
+    if (cs.coresCount > kCoresCountThreshold) {
+      final numCoresToDisplay = cs.coresCount - 1;
+      final numRows = (numCoresToDisplay + kMaxColumn - 1) ~/ kMaxColumn;
+
+      for (var i = 0; i < numRows; i++) {
         final rowChildren = <Widget>[];
         for (var j = 0; j < kMaxColumn; j++) {
-          final idx = i * kMaxColumn + j + 1;
-          if (idx >= cs.coresCount) break;
-          if (Stores.setting.displayCpuIndex.fetch()) {
-            rowChildren.add(Text('$idx', style: UIs.text13Grey));
+          final coreListIndex = i * kMaxColumn + j;
+          if (coreListIndex >= numCoresToDisplay) break;
+
+          final coreNumberOneBased = coreListIndex + 1;
+
+          if (displayCpuIndexSetting) {
+            rowChildren.add(Text('$coreNumberOneBased', style: UIs.text13Grey));
           }
           rowChildren.add(
             Expanded(
               child: Padding(
                 padding: const EdgeInsets.symmetric(vertical: 3),
-                child: _buildProgress(cs.usedPercent(coreIdx: idx)),
+                child: _buildProgress(
+                  cs.usedPercent(coreIdx: coreNumberOneBased),
+                ),
               ),
             ),
           );
         }
-        rowChildren.joinWith(UIs.width7);
-        children.add(
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 17),
-            child: Row(
-              children: rowChildren,
+        if (rowChildren.isNotEmpty) {
+          children.add(
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 17),
+              child: Row(children: rowChildren.joinWith(UIs.width7).toList()),
             ),
-          ),
-        );
+          );
+        }
       }
     } else {
-      for (var i = 0; i < cs.coresCount; i++) {
-        if (i == 0) continue;
+      for (var i = 1; i < cs.coresCount; i++) {
         children.add(
           Padding(
             padding: const EdgeInsets.symmetric(vertical: 3, horizontal: 17),
@@ -302,6 +363,25 @@ class _ServerDetailPageState extends State<ServerDetailPage>
     }
 
     return children;
+  }
+
+  Widget _buildCPUChart(server_model.ServerStatus ss) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 17, vertical: 13),
+      child: LayoutBuilder(
+        builder: (_, cons) {
+          return SizedBox(
+            height: 137,
+            width: cons.maxWidth,
+            child: _buildLineChart(
+              ss.cpu.spots,
+              //ss.cpu.rangeX,
+              tooltipPrefix: 'CPU',
+            ),
+          );
+        },
+      ),
+    );
   }
 
   Widget _buildProgress(double percent) {
@@ -315,104 +395,108 @@ class _ServerDetailPageState extends State<ServerDetailPage>
     );
   }
 
-  Widget _buildMemView(ServerStatus ss) {
+  Widget? _buildMemView(ServerState si) {
+    final ss = si.status;
     final free = ss.mem.free / ss.mem.total * 100;
     final avail = ss.mem.availPercent * 100;
     final used = ss.mem.usedPercent * 100;
     final usedStr = used.toStringAsFixed(0);
 
-    return CardX(
-      child: Padding(
-        padding: UIs.roundRectCardPadding,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.center,
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Row(
-                  children: [
-                    _buildAnimatedText(
-                      ValueKey(usedStr),
-                      '$usedStr%',
-                      UIs.text27,
-                    ),
-                    UIs.width7,
-                    Text(
-                      'of ${(ss.mem.total * 1024).bytes2Str}',
-                      style: UIs.text13Grey,
-                    )
-                  ],
-                ),
-                Row(
-                  children: [
-                    _buildDetailPercent(free, 'free'),
-                    UIs.width13,
-                    _buildDetailPercent(avail, 'avail'),
-                  ],
-                ),
-              ],
-            ),
-            UIs.height13,
-            _buildProgress(used)
-          ],
-        ),
-      ),
+    final percentW = Row(
+      children: [
+        _buildAnimatedText(ValueKey(usedStr), '$usedStr%', UIs.text27),
+        UIs.width7,
+        Text('of ${(ss.mem.total * 1024).bytes2Str}', style: UIs.text13Grey),
+      ],
     );
+
+    return Padding(
+      padding: UIs.roundRectCardPadding,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              percentW,
+              Row(
+                children: [
+                  _buildDetailPercent(free, 'free'),
+                  UIs.width13,
+                  _buildDetailPercent(avail, 'avail'),
+                ],
+              ),
+            ],
+          ),
+          UIs.height13,
+          _buildProgress(used),
+        ],
+      ),
+    ).cardx;
   }
 
-  Widget _buildSwapView(ServerStatus ss) {
-    if (ss.swap.total == 0) return UIs.placeholder;
+  Widget? _buildSwapView(ServerState si) {
+    final ss = si.status;
+    if (ss.swap.total == 0) return null;
+
     final used = ss.swap.usedPercent * 100;
     final cached = ss.swap.cached / ss.swap.total * 100;
-    return CardX(
-      child: Padding(
-        padding: UIs.roundRectCardPadding,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.center,
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Row(
-                  children: [
-                    Text('${used.toStringAsFixed(0)}%', style: UIs.text27),
-                    UIs.width7,
-                    Text(
-                      'of ${(ss.swap.total * 1024).bytes2Str} ',
-                      style: UIs.text13Grey,
-                    )
-                  ],
-                ),
-                _buildDetailPercent(cached, 'cached'),
-              ],
-            ),
-            UIs.height13,
-            _buildProgress(used)
-          ],
-        ),
-      ),
+
+    final percentW = Row(
+      children: [
+        Text('${used.toStringAsFixed(0)}%', style: UIs.text27),
+        UIs.width7,
+        Text('of ${(ss.swap.total * 1024).bytes2Str} ', style: UIs.text13Grey),
+      ],
     );
+
+    return Padding(
+      padding: UIs.roundRectCardPadding,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [percentW, _buildDetailPercent(cached, 'cached')],
+          ),
+          UIs.height13,
+          _buildProgress(used),
+        ],
+      ),
+    ).cardx;
   }
 
-  Widget _buildGpuView(ServerStatus ss) {
-    if (ss.nvidia == null || ss.nvidia?.isEmpty == true) return UIs.placeholder;
-    final children = ss.nvidia?.map((e) => _buildGpuItem(e)).toList() ?? [];
-    return CardX(
-      child: ExpandTile(
-        title: const Text('GPU'),
-        leading: const Icon(Icons.memory, size: 17),
-        initiallyExpanded: _getInitExpand(children.length, 3),
-        children: children,
-      ),
-    );
+  Widget? _buildGpuView(ServerState si) {
+    final ss = si.status;
+    final hasNvidia = ss.nvidia != null && ss.nvidia!.isNotEmpty;
+    final hasAmd = ss.amd != null && ss.amd!.isNotEmpty;
+
+    if (!hasNvidia && !hasAmd) return null;
+
+    final children = <Widget>[];
+
+    // Add NVIDIA GPUs
+    if (hasNvidia) {
+      children.addAll(ss.nvidia!.map((e) => _buildNvidiaGpuItem(e)));
+    }
+
+    // Add AMD GPUs
+    if (hasAmd) {
+      children.addAll(ss.amd!.map((e) => _buildAmdGpuItem(e)));
+    }
+
+    return ExpandTile(
+      title: const Text('GPU'),
+      leading: const Icon(Icons.memory, size: 17),
+      initiallyExpanded: _getInitExpand(children.length, 3),
+      children: children,
+    ).cardx;
   }
 
-  Widget _buildGpuItem(NvidiaSmiItem item) {
+  Widget _buildNvidiaGpuItem(NvidiaSmiItem item) {
     final mem = item.memory;
-    final processes = mem.processes;
     return ListTile(
       title: Text(item.name, style: UIs.text13),
       leading: Text(
@@ -427,202 +511,370 @@ class _ServerDetailPageState extends State<ServerDetailPage>
         textScaler: _textFactor,
       ),
       contentPadding: const EdgeInsets.only(left: 17, right: 17),
-      trailing: Row(
-        mainAxisAlignment: MainAxisAlignment.end,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          IconButton(
-            onPressed: () {
-              final height = () {
-                if (processes.length > 5) {
-                  return 5 * 47.0;
-                }
-                return processes.length * 47.0;
-              }();
-              context.showRoundDialog(
-                title: item.name,
-                child: SizedBox(
-                  width: double.maxFinite,
-                  height: height,
-                  child: ListView.builder(
-                    itemCount: processes.length,
-                    itemBuilder: (_, idx) =>
-                        _buildGpuProcessItem(processes[idx]),
-                  ),
-                ),
-                actions: [
-                  TextButton(
-                    onPressed: () => context.pop(),
-                    child: Text(l10n.close),
-                  )
-                ],
-              );
-            },
-            icon: const Icon(Icons.info_outline, size: 17),
-          ),
-        ],
+      trailing: _buildGpuInfoButton(() => _onTapNvidiaGpuItem(item)),
+    );
+  }
+
+  Widget _buildAmdGpuItem(AmdSmiItem item) {
+    final mem = item.memory;
+    return ListTile(
+      title: Text('${item.name} (AMD)', style: UIs.text13),
+      leading: Text(
+        '${item.utilization}%\n${item.temp} °C',
+        style: UIs.text12Grey,
+        textScaler: _textFactor,
+        textAlign: TextAlign.center,
       ),
+      subtitle: Text(
+        '${item.power} - FAN ${item.fanSpeed} RPM\n${item.clockSpeed} MHz\n${mem.used} / ${mem.total} ${mem.unit}',
+        style: UIs.text12Grey,
+        textScaler: _textFactor,
+      ),
+      contentPadding: const EdgeInsets.only(left: 17, right: 17),
+      trailing: _buildGpuInfoButton(() => _onTapAmdGpuItem(item)),
     );
   }
 
   Widget _buildGpuProcessItem(NvidiaSmiMemProcess process) {
+    return _buildGpuProcessTile(
+      name: process.name,
+      subtitle: 'PID: ${process.pid} - ${process.memory} MiB',
+      onTap: () => _onTapGpuProcessItem(process),
+    );
+  }
+
+  Widget _buildAmdGpuProcessItem(AmdSmiMemProcess process) {
+    return _buildGpuProcessTile(
+      name: process.name,
+      subtitle:
+          'PID: ${process.pid} - ${_formatAmdGpuProcessMemory(process.memory)}',
+      onTap: () => _onTapAmdGpuProcessItem(process),
+    );
+  }
+
+  Widget _buildGpuInfoButton(VoidCallback onPressed) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.end,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        IconButton(
+          onPressed: onPressed,
+          icon: const Icon(Icons.info_outline, size: 17),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildGpuProcessTile({
+    required String name,
+    required String subtitle,
+    required VoidCallback onTap,
+  }) {
     return ListTile(
       title: Text(
-        process.name,
+        name,
         style: UIs.text12,
         maxLines: 1,
         overflow: TextOverflow.ellipsis,
         textScaler: _textFactor,
       ),
-      subtitle: Text(
-        'PID: ${process.pid} - ${process.memory} MiB',
-        style: UIs.text12Grey,
-        textScaler: _textFactor,
-      ),
+      subtitle: Text(subtitle, style: UIs.text12Grey, textScaler: _textFactor),
       trailing: InkWell(
-        onTap: () {
-          context.showRoundDialog(
-            title: '${process.pid}',
-            titleMaxLines: 1,
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                UIs.height13,
-                Text('Memory: ${process.memory} MiB'),
-                UIs.height13,
-                Text('Process: ${process.name}')
-              ],
-            ),
-            actions: [
-              TextButton(
-                onPressed: () => context.pop(),
-                child: Text(l10n.close),
-              )
-            ],
-          );
-        },
+        onTap: onTap,
         child: const Icon(Icons.info_outline, size: 17),
       ),
     );
   }
 
-  Widget _buildDiskView(ServerStatus ss) {
-    final children = List.generate(
-        ss.disk.length, (idx) => _buildDiskItem(ss.disk[idx], ss));
-    return CardX(
-      child: ExpandTile(
-        title: Text(l10n.disk),
-        childrenPadding: const EdgeInsets.only(bottom: 7),
-        leading: Icon(ServerDetailCards.disk.icon, size: 17),
-        initiallyExpanded: _getInitExpand(children.length),
-        children: children,
-      ),
-    );
+  Widget? _buildDiskView(ServerState si) {
+    final ss = si.status;
+    final children = <Widget>[];
+
+    // Create widgets for each top-level disk
+    for (int idx = 0; idx < ss.disk.length; idx++) {
+      final disk = ss.disk[idx];
+      children.add(_buildDiskItemWithHierarchy(disk, ss, 0));
+    }
+
+    if (children.isEmpty) return null;
+
+    return ExpandTile(
+      title: Text(libL10n.disk),
+      childrenPadding: const EdgeInsets.only(bottom: 7),
+      leading: Icon(ServerDetailCards.disk.icon, size: 17),
+      initiallyExpanded: _getInitExpand(children.length),
+      children: children,
+    ).cardx;
   }
 
-  Widget _buildDiskItem(Disk disk, ServerStatus ss) {
-    final (read, write) = ss.diskIO.getSpeed(disk.fs);
+  Widget _buildDiskItemWithHierarchy(
+    Disk disk,
+    server_model.ServerStatus ss,
+    int depth,
+  ) {
+    // Create a list to hold this disk and its children
+    final items = <Widget>[];
+
+    // Add the current disk
+    items.add(_buildDiskItem(disk, ss, depth));
+
+    // Recursively add child disks with increased indentation
+    if (disk.children.isNotEmpty) {
+      for (final childDisk in disk.children) {
+        items.add(_buildDiskItemWithHierarchy(childDisk, ss, depth + 1));
+      }
+    }
+
+    return Column(children: items);
+  }
+
+  Widget _buildDiskItem(Disk disk, server_model.ServerStatus ss, int depth) {
+    final (read, write) = ss.diskIO.getSpeed(disk.path);
     final text = () {
       final use = '${l10n.used} ${disk.used.kb2Str} / ${disk.size.kb2Str}';
       if (read == null || write == null) return use;
       return '$use\n${l10n.read} $read | ${l10n.write} $write';
     }();
+
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 17, vertical: 5),
+      padding: EdgeInsets.only(
+        left: 17.0 + (depth * 15.0), // Indent based on depth
+        right: 17.0,
+        top: 5.0,
+        bottom: 5.0,
+      ),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                disk.fs,
-                style: UIs.text12,
-                textScaler: _textFactor,
-              ),
-              Text(
-                text,
-                style: UIs.text12Grey,
-                textScaler: _textFactor,
-              )
-            ],
-          ),
-          SizedBox(
-            height: 41,
-            width: 41,
-            child: Stack(
-              alignment: Alignment.center,
+          Expanded(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                CircularProgressIndicator(
-                  value: disk.usedPercent / 100,
-                  strokeWidth: 5,
-                  backgroundColor: UIs.halfAlpha,
-                  color: UIs.primaryColor,
+                Text(
+                  disk.mount.isEmpty
+                      ? disk.path
+                      : '${disk.path} (${disk.mount})',
+                  style: UIs.text12,
+                  textScaler: _textFactor,
                 ),
-                Text('${disk.usedPercent}%', style: UIs.text12Grey)
+                Text(text, style: UIs.text12Grey, textScaler: _textFactor),
               ],
             ),
-          )
+          ),
+          if (disk.size > BigInt.zero)
+            SizedBox(
+              height: 41,
+              width: 41,
+              child: Stack(
+                alignment: Alignment.center,
+                children: [
+                  CircularProgressIndicator(
+                    value: disk.usedPercent / 100,
+                    strokeWidth: 5,
+                    backgroundColor: UIs.halfAlpha,
+                    color: UIs.primaryColor,
+                  ),
+                  Text('${disk.usedPercent}%', style: UIs.text12Grey),
+                ],
+              ),
+            ),
         ],
       ),
     );
   }
 
-  Widget _buildNetView(ServerStatus ss) {
-    final ns = ss.netSpeed;
-    final children = <Widget>[];
-    if (ns.devices.isEmpty) {
-      children.add(Center(
-        child: Text(
-          l10n.noInterface,
-          style: UIs.text13Grey,
-        ),
-      ));
-    } else {
-      final devices = ns.devices;
-      devices.sort(_netSortType.value.getSortFunc(ns));
-      children.addAll(devices.map((e) => _buildNetSpeedItem(ns, e)));
-    }
+  Widget? _buildDiskSmart(ServerState si) {
+    final smarts = si.status.diskSmart;
+    if (smarts.isEmpty) return null;
     return CardX(
       child: ExpandTile(
-        leading: Icon(ServerDetailCards.net.icon, size: 17),
-        title: Row(
-          children: [
-            Text(l10n.net),
-            UIs.width13,
-            ValBuilder(
-              listenable: _netSortType,
-              builder: (val) => InkWell(
-                onTap: () => _netSortType.value = val.next,
-                child: AnimatedSwitcher(
-                  duration: const Duration(milliseconds: 377),
-                  transitionBuilder: (child, animation) => FadeTransition(
-                    opacity: animation,
-                    child: child,
-                  ),
-                  child: Row(
-                    children: [
-                      const Icon(Icons.sort, size: 17),
-                      UIs.width7,
-                      Text(
-                        val.name,
-                        style: UIs.text13Grey,
-                      ),
-                    ],
-                  ),
+        title: Text(l10n.diskHealth),
+        leading: Icon(ServerDetailCards.smart.icon, size: 17),
+        childrenPadding: const EdgeInsets.only(bottom: 7),
+        initiallyExpanded: _getInitExpand(smarts.length),
+        children: smarts.map(_buildDiskSmartItem).toList(),
+      ),
+    );
+  }
+
+  Widget _buildDiskSmartItem(DiskSmart smart) {
+    final healthStatus = _getDiskHealthStatus(smart);
+
+    return ListTile(
+      dense: true,
+      leading: healthStatus.icon,
+      title: Text(smart.device, style: UIs.text13, textScaler: _textFactor),
+      trailing: Text(
+        healthStatus.text,
+        style: UIs.text13.copyWith(fontWeight: FontWeight.bold),
+        textScaler: _textFactor,
+      ),
+      subtitle: _buildDiskSmartDetails(smart),
+      onTap: () => _onTapDiskSmartItem(smart),
+    );
+  }
+
+  ({String text, Color color, Widget icon}) _getDiskHealthStatus(
+    DiskSmart smart,
+  ) {
+    if (smart.healthy == null) {
+      return (
+        text: libL10n.unknown,
+        color: Colors.orange,
+        icon: const Icon(Icons.help_outline, color: Colors.orange, size: 18),
+      );
+    } else if (smart.healthy!) {
+      return (
+        text: 'PASS',
+        color: Colors.green,
+        icon: const Icon(Icons.check_circle, color: Colors.green, size: 18),
+      );
+    } else {
+      return (
+        text: 'FAIL',
+        color: Colors.red,
+        icon: const Icon(Icons.error, color: Colors.red, size: 18),
+      );
+    }
+  }
+
+  Widget? _buildDiskSmartDetails(DiskSmart smart) {
+    final details = <String>[];
+
+    if (smart.model != null) {
+      details.add(smart.model!);
+    }
+
+    if (smart.temperature != null) {
+      details.add('${smart.temperature!.toStringAsFixed(1)}°C');
+    }
+
+    if (smart.powerOnHours != null) {
+      final hours = smart.powerOnHours!;
+      details.add('$hours ${libL10n.hour}');
+    }
+
+    if (smart.ssdLifeLeft != null) {
+      details.add('Life left: ${smart.ssdLifeLeft}%');
+    }
+
+    if (details.isEmpty) return null;
+
+    return Text(
+      details.join(' | '),
+      style: UIs.text12Grey,
+      textScaler: _textFactor,
+      maxLines: 2,
+      overflow: TextOverflow.ellipsis,
+    );
+  }
+
+  void _onTapDiskSmartItem(DiskSmart smart) {
+    final details = <String>[];
+
+    if (smart.model != null) details.add('Model: ${smart.model}');
+    if (smart.serial != null) details.add('Serial: ${smart.serial}');
+    if (smart.temperature != null) {
+      details.add('Temperature: ${smart.temperature!.toStringAsFixed(1)}°C');
+    }
+
+    if (smart.powerOnHours != null) {
+      details.add('Power On: ${smart.powerOnHours} ${libL10n.hour}');
+    }
+    if (smart.powerCycleCount != null) {
+      details.add('Power Cycle: ${smart.powerCycleCount}');
+    }
+
+    if (smart.ssdLifeLeft != null) {
+      details.add('Life Left: ${smart.ssdLifeLeft}%');
+    }
+    if (smart.lifetimeWritesGiB != null) {
+      details.add('Lifetime Write: ${smart.lifetimeWritesGiB} GiB');
+    }
+    if (smart.lifetimeReadsGiB != null) {
+      details.add('Lifetime Read: ${smart.lifetimeReadsGiB} GiB');
+    }
+    if (smart.averageEraseCount != null) {
+      details.add('Avg. Erase: ${smart.averageEraseCount}');
+    }
+    if (smart.unsafeShutdownCount != null) {
+      details.add('Unsafe Shutdown: ${smart.unsafeShutdownCount}');
+    }
+
+    final criticalAttrs = [
+      'Reallocated_Sector_Ct',
+      'Current_Pending_Sector',
+      'Offline_Uncorrectable',
+      'UDMA_CRC_Error_Count',
+    ];
+
+    for (final attrName in criticalAttrs) {
+      final attr = smart.getAttribute(attrName);
+      if (attr != null && attr.rawValue != null) {
+        final value = attr.rawValue.toString();
+        details.add('${attrName.replaceAll('_', ' ')}: $value');
+      }
+    }
+
+    if (details.isEmpty) {
+      return;
+    }
+
+    final markdown = details.join('\n\n- ');
+    context.showRoundDialog(
+      title: smart.device,
+      child: MarkdownBody(
+        data: '- $markdown',
+        selectable: true,
+        styleSheet: MarkdownStyleSheet.fromTheme(
+          Theme.of(context),
+        ).copyWith(p: UIs.text13Grey, h2: UIs.text15),
+      ),
+      actions: Btnx.oks,
+    );
+  }
+
+  Widget? _buildNetView(ServerState si) {
+    final ss = si.status;
+    final ns = ss.netSpeed;
+    final children = <Widget>[];
+    final devices = ns.devices;
+    if (devices.isEmpty) return null;
+
+    devices.sort(_netSortType.value.getSortFunc(ns));
+    children.addAll(devices.map((e) => _buildNetSpeedItem(ns, e)));
+
+    return ExpandTile(
+      leading: Icon(ServerDetailCards.net.icon, size: 17),
+      title: Row(
+        children: [
+          Text(libL10n.net),
+          UIs.width13,
+          _netSortType.listenVal(
+            (val) => InkWell(
+              onTap: () => _netSortType.value = val.next,
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 377),
+                transitionBuilder: (child, animation) =>
+                    FadeTransition(opacity: animation, child: child),
+                child: Row(
+                  children: [
+                    const Icon(Icons.sort, size: 17),
+                    UIs.width7,
+                    Text(val.name, style: UIs.text13Grey),
+                  ],
                 ),
               ),
             ),
-          ],
-        ),
-        childrenPadding: const EdgeInsets.only(bottom: 11),
-        initiallyExpanded: _getInitExpand(children.length),
-        children: children,
+          ),
+        ],
       ),
-    );
+      childrenPadding: const EdgeInsets.only(bottom: 11),
+      initiallyExpanded: _getInitExpand(children.length),
+      children: children,
+    ).cardx;
   }
 
   Widget _buildNetSpeedItem(NetSpeed ns, String device) {
@@ -646,7 +898,7 @@ class _ServerDetailPageState extends State<ServerDetailPage>
                 '${ns.sizeIn(device: device)} | ${ns.sizeOut(device: device)}',
                 style: UIs.text12Grey,
                 textScaler: _textFactor,
-              )
+              ),
             ],
           ),
           SizedBox(
@@ -656,20 +908,20 @@ class _ServerDetailPageState extends State<ServerDetailPage>
               textAlign: TextAlign.end,
               style: UIs.text13Grey,
             ),
-          )
+          ),
         ],
       ),
     );
   }
 
-  Widget _buildTemperature(ServerStatus ss) {
-    if (ss.temps.isEmpty) {
-      return UIs.placeholder;
-    }
+  Widget? _buildTemperature(ServerState si) {
+    final ss = si.status;
+    if (ss.temps.isEmpty) return null;
+
     return CardX(
       child: ExpandTile(
-        title: Text(l10n.temperature),
-        leading: const Icon(Icons.ac_unit, size: 17),
+        title: Text(libL10n.temperature),
+        leading: const Icon(Icons.ac_unit, size: 20),
         initiallyExpanded: _getInitExpand(ss.temps.devices.length),
         childrenPadding: const EdgeInsets.only(bottom: 7),
         children: ss.temps.devices
@@ -681,24 +933,28 @@ class _ServerDetailPageState extends State<ServerDetailPage>
 
   Widget _buildTemperatureItem(String key, double? val) {
     return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 17, vertical: 5),
+      padding: const EdgeInsets.only(left: 3, right: 17, top: 5, bottom: 5),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
-          Text(key, style: UIs.text15),
+          Btn.text(
+            text: key,
+            textStyle: UIs.text15,
+            onTap: () => _onTapTemperatureItem(key),
+          ).paddingSymmetric(horizontal: 5),
           Text('${val?.toStringAsFixed(1)}°C', style: UIs.text13Grey),
         ],
       ),
     );
   }
 
-  Widget _buildBatteries(ServerStatus ss) {
-    if (ss.batteries.isEmpty) {
-      return UIs.placeholder;
-    }
+  Widget? _buildBatteries(ServerState si) {
+    final ss = si.status;
+    if (ss.batteries.isEmpty) return null;
+
     return CardX(
       child: ExpandTile(
-        title: Text(l10n.battery),
+        title: Text(libL10n.battery),
         leading: const Icon(Icons.battery_charging_full, size: 17),
         childrenPadding: const EdgeInsets.only(bottom: 7),
         initiallyExpanded: _getInitExpand(ss.batteries.length, 2),
@@ -733,11 +989,12 @@ class _ServerDetailPageState extends State<ServerDetailPage>
     );
   }
 
-  Widget _buildSensors(ServerStatus ss) {
+  Widget? _buildSensors(ServerState si) {
+    final ss = si.status;
     if (ss.sensors.isEmpty) return UIs.placeholder;
     return CardX(
       child: ExpandTile(
-        title: Text(l10n.sensors),
+        title: Text(libL10n.sensors),
         leading: const Icon(Icons.thermostat, size: 17),
         childrenPadding: const EdgeInsets.only(bottom: 7),
         initiallyExpanded: _getInitExpand(ss.sensors.length, 2),
@@ -753,41 +1010,30 @@ class _ServerDetailPageState extends State<ServerDetailPage>
         child: Text(si.device),
       );
     }
+
+    final itemW = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Row(
+          children: [
+            Text(si.device, style: UIs.text15),
+            UIs.width7,
+            Text('(${si.adapter.raw})', style: UIs.text13Grey),
+          ],
+        ),
+        Text(si.summary ?? '', style: UIs.text13Grey),
+      ],
+    ).expanded();
+
     return InkWell(
-      onTap: () {
-        context.showRoundDialog(
-          title: si.device,
-          child: SingleChildScrollView(
-            child: SimpleMarkdown(
-              data: si.toMarkdown,
-              styleSheet: MarkdownStyleSheet(
-                tableBorder: TableBorder.all(color: Colors.grey),
-                tableHead: const TextStyle(fontWeight: FontWeight.bold),
-              ),
-            ),
-          ),
-        );
-      },
+      onTap: () => _onTapSensorItem(si),
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 17, vertical: 7),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.center,
           children: [
-            Expanded(
-                child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Row(
-                  children: [
-                    Text(si.device, style: UIs.text15Bold),
-                    UIs.width7,
-                    Text('(${si.adapter.raw})', style: UIs.text13Grey),
-                  ],
-                ),
-                Text(si.summary ?? '', style: UIs.text13Grey),
-              ],
-            )),
+            itemW,
             UIs.width7,
             const Icon(Icons.keyboard_arrow_right, color: Colors.grey),
           ],
@@ -796,32 +1042,33 @@ class _ServerDetailPageState extends State<ServerDetailPage>
     );
   }
 
-  Widget _buildPve(_) {
-    final addr = widget.spi.custom?.pveAddr;
-    if (addr == null) return UIs.placeholder;
+  Widget? _buildPve(ServerState si) {
+    final addr = si.spi.custom?.pveAddr;
+    if (addr == null || addr.isEmpty) return null;
     return CardX(
       child: ListTile(
         title: const Text('PVE'),
         leading: const Icon(FontAwesome.server_solid, size: 17),
         trailing: const Icon(Icons.chevron_right),
-        onTap: () => AppRoutes.pve(spi: widget.spi).go(context),
+        onTap: () => PvePage.route.go(context, PvePageArgs(spi: si.spi)),
       ),
     );
   }
 
-  Widget _buildCustom(ServerStatus ss) {
-    if (ss.customCmds.isEmpty) return UIs.placeholder;
+  Widget? _buildCustomCmd(ServerState si) {
+    final ss = si.status;
+    if (ss.customCmds.isEmpty) return null;
     return CardX(
       child: ExpandTile(
         leading: const Icon(MingCute.command_line, size: 17),
         title: Text(l10n.customCmd),
         initiallyExpanded: _getInitExpand(ss.customCmds.length),
-        children: ss.customCmds.entries.map(_buildCustomItem).toList(),
+        children: ss.customCmds.entries.map(_buildCustomCmdItem).toList(),
       ),
     );
   }
 
-  Widget _buildCustomItem(MapEntry<String, String> cmd) {
+  Widget _buildCustomCmdItem(MapEntry<String, String> cmd) {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 17, vertical: 7),
       child: KvRow(
@@ -830,25 +1077,8 @@ class _ServerDetailPageState extends State<ServerDetailPage>
         vBuilder: () {
           if (!cmd.value.contains('\n')) return null;
           return GestureDetector(
-            onTap: () {
-              context.showRoundDialog(
-                title: cmd.key,
-                child: SingleChildScrollView(
-                  child: Text(cmd.value, style: UIs.text13Grey),
-                ),
-                actions: [
-                  TextButton(
-                    onPressed: () => context.pop(),
-                    child: Text(l10n.close),
-                  ),
-                ],
-              );
-            },
-            child: const Icon(
-              Icons.info_outline,
-              size: 17,
-              color: Colors.grey,
-            ),
+            onTap: () => _onTapCustomItem(cmd),
+            child: const Icon(Icons.info_outline, size: 17, color: Colors.grey),
           );
         },
       ),
@@ -858,21 +1088,9 @@ class _ServerDetailPageState extends State<ServerDetailPage>
   Widget _buildAnimatedText(Key key, String text, TextStyle style) {
     return AnimatedSwitcher(
       duration: const Duration(milliseconds: 277),
-      child: Text(
-        key: key,
-        text,
-        style: style,
-        textScaler: _textFactor,
-      ),
-      transitionBuilder: (child, animation) => FadeTransition(
-        opacity: animation,
-        child: child,
-      ),
+      child: Text(key: key, text, style: style, textScaler: _textFactor),
+      transitionBuilder: (child, animation) =>
+          FadeTransition(opacity: animation, child: child),
     );
-  }
-
-  bool _getInitExpand(int len, [int? max]) {
-    if (!_collapse) return true;
-    return len <= (max ?? 3);
   }
 }

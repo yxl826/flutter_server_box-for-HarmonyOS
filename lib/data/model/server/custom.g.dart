@@ -3,51 +3,32 @@
 part of 'custom.dart';
 
 // **************************************************************************
-// TypeAdapterGenerator
+// JsonSerializableGenerator
 // **************************************************************************
 
-class ServerCustomAdapter extends TypeAdapter<ServerCustom> {
-  @override
-  final int typeId = 7;
+ServerCustom _$ServerCustomFromJson(Map<String, dynamic> json) => ServerCustom(
+  pveAddr: json['pveAddr'] as String?,
+  pveIgnoreCert: json['pveIgnoreCert'] as bool? ?? false,
+  pvePwd: json['pvePwd'] as String?,
+  cmds: (json['cmds'] as Map<String, dynamic>?)?.map(
+    (k, e) => MapEntry(k, e as String),
+  ),
+  preferTempDev: json['preferTempDev'] as String?,
+  tempIsCelsius: json['tempIsCelsius'] as bool? ?? false,
+  logoUrl: json['logoUrl'] as String?,
+  netDev: json['netDev'] as String?,
+  scriptDir: json['scriptDir'] as String?,
+);
 
-  @override
-  ServerCustom read(BinaryReader reader) {
-    final numOfFields = reader.readByte();
-    final fields = <int, dynamic>{
-      for (int i = 0; i < numOfFields; i++) reader.readByte(): reader.read(),
+Map<String, dynamic> _$ServerCustomToJson(ServerCustom instance) =>
+    <String, dynamic>{
+      'pveAddr': ?instance.pveAddr,
+      'pveIgnoreCert': instance.pveIgnoreCert,
+      'pvePwd': ?instance.pvePwd,
+      'cmds': ?instance.cmds,
+      'preferTempDev': ?instance.preferTempDev,
+      'tempIsCelsius': instance.tempIsCelsius,
+      'logoUrl': ?instance.logoUrl,
+      'netDev': ?instance.netDev,
+      'scriptDir': ?instance.scriptDir,
     };
-    return ServerCustom(
-      pveAddr: fields[1] as String?,
-      pveIgnoreCert: fields[2] == null ? false : fields[2] as bool,
-      cmds: (fields[3] as Map?)?.cast<String, String>(),
-      preferTempDev: fields[4] as String?,
-      logoUrl: fields[5] as String?,
-    );
-  }
-
-  @override
-  void write(BinaryWriter writer, ServerCustom obj) {
-    writer
-      ..writeByte(5)
-      ..writeByte(1)
-      ..write(obj.pveAddr)
-      ..writeByte(2)
-      ..write(obj.pveIgnoreCert)
-      ..writeByte(3)
-      ..write(obj.cmds)
-      ..writeByte(4)
-      ..write(obj.preferTempDev)
-      ..writeByte(5)
-      ..write(obj.logoUrl);
-  }
-
-  @override
-  int get hashCode => typeId.hashCode;
-
-  @override
-  bool operator ==(Object other) =>
-      identical(this, other) ||
-      other is ServerCustomAdapter &&
-          runtimeType == other.runtimeType &&
-          typeId == other.typeId;
-}

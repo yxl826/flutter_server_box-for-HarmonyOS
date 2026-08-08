@@ -1,5 +1,8 @@
 import { FlutterEngine, Log } from '@ohos/flutter_ohos';
+import SharedPreferencesPlugin from 'shared_preferences_ohos';
 import PathProviderPlugin from 'path_provider_ohos';
+import SharePlusOhosPlugin from 'share_plus';
+import FilePickerPlugin from 'file_picker';
 
 /**
  * Generated file. Do not edit.
@@ -13,7 +16,10 @@ export class GeneratedPluginRegistrant {
 
   static registerWith(flutterEngine: FlutterEngine) {
     try {
+      flutterEngine.getPlugins()?.add(new SharedPreferencesPlugin());
       flutterEngine.getPlugins()?.add(new PathProviderPlugin());
+      flutterEngine.getPlugins()?.add(new SharePlusOhosPlugin());
+      flutterEngine.getPlugins()?.add(new FilePickerPlugin());
     } catch (e) {
       Log.e(
         TAG,

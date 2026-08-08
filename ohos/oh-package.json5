@@ -9,12 +9,12 @@
   "dependencies": {
     "@ohos/flutter_ohos": "file:./har/flutter.har"
   },
-  "devDependencies": {
-    "@ohos/hypium": "1.0.6"
-  },
   "overrides": {
     "@ohos/flutter_ohos": "file:./har/flutter.har",
     "path_provider_ohos": "file:./har/path_provider_ohos.har",
-    "@ohos/flutter_module": "file:./entry"
+    "@ohos/flutter_module": "file:./entry",
+    "shared_preferences_ohos": "file:./har/shared_preferences_ohos.har",
+    "share_plus": "../vendor/share_plus/ohos",
+    "file_picker": "../vendor/file_picker/ohos"
   }
 }

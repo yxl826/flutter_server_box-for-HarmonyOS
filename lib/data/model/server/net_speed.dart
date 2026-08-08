@@ -1,6 +1,8 @@
+// ignore_for_file: unintended_html_in_doc_comment
+
 import 'package:fl_lib/fl_lib.dart';
 
-import 'time_seq.dart';
+import 'package:server_box/data/model/server/time_seq.dart';
 
 class NetSpeedPart extends TimeSeqIface<NetSpeedPart> {
   final String device;
@@ -14,7 +16,9 @@ class NetSpeedPart extends TimeSeqIface<NetSpeedPart> {
   bool same(NetSpeedPart other) => device == other.device;
 }
 
-class NetSpeed extends TimeSeq<List<NetSpeedPart>> {
+typedef CachedNetVals = ({String sizeIn, String sizeOut, String speedIn, String speedOut});
+
+class NetSpeed extends TimeSeq<NetSpeedPart> {
   NetSpeed(super.init1, super.init2);
 
   @override
@@ -23,20 +27,14 @@ class NetSpeed extends TimeSeq<List<NetSpeedPart>> {
     devices.addAll(now.map((e) => e.device).toList());
 
     realIfaces.clear();
-    realIfaces.addAll(devices
-        .where((e) => realIfacePrefixs.any((prefix) => e.startsWith(prefix)))
-        .toList());
+    realIfaces.addAll(devices.where((e) => realIfacePrefixs.any((prefix) => e.startsWith(prefix))));
 
     final sizeIn = this.sizeIn();
     final sizeOut = this.sizeOut();
     final speedIn = this.speedIn();
     final speedOut = this.speedOut();
-    cachedRealVals = (
-      sizeIn: sizeIn,
-      sizeOut: sizeOut,
-      speedIn: speedIn,
-      speedOut: speedOut,
-    );
+
+    cachedVals = (sizeIn: sizeIn, sizeOut: sizeOut, speedIn: speedIn, speedOut: speedOut);
   }
 
   /// Cached network device list
@@ -49,25 +47,19 @@ class NetSpeed extends TimeSeq<List<NetSpeedPart>> {
   /// Cached non-virtual network device prefix
   final realIfaces = <String>[];
 
-  ({
-    String sizeIn,
-    String sizeOut,
-    String speedIn,
-    String speedOut,
-  }) cachedRealVals =
-      (sizeIn: '0kb', sizeOut: '0kb', speedIn: '0kb/s', speedOut: '0kb/s');
+  CachedNetVals cachedVals = (sizeIn: '0kb', sizeOut: '0kb', speedIn: '0kb/s', speedOut: '0kb/s');
 
   /// Time diff between [pre] and [now]
   BigInt get _timeDiff => BigInt.from(now[0].time - pre[0].time);
 
   double speedInBytes(int i) => (now[i].bytesIn - pre[i].bytesIn) / _timeDiff;
-  double speedOutBytes(int i) =>
-      (now[i].bytesOut - pre[i].bytesOut) / _timeDiff;
+  double speedOutBytes(int i) => (now[i].bytesOut - pre[i].bytesOut) / _timeDiff;
   BigInt sizeInBytes(int i) => now[i].bytesIn;
   BigInt sizeOutBytes(int i) => now[i].bytesOut;
 
   String speedIn({String? device}) {
-    if (pre[0].device == '' || now[0].device == '') return '0kb/s';
+    if (pre.isEmpty || now.isEmpty) return 'N/A';
+    if (pre.length != now.length) return 'N/A';
     if (device == null) {
       var speed = 0.0;
       for (final device in devices) {
@@ -84,7 +76,8 @@ class NetSpeed extends TimeSeq<List<NetSpeedPart>> {
   }
 
   String sizeIn({String? device}) {
-    if (pre[0].device == '' || now[0].device == '') return '0kb';
+    if (pre.isEmpty || now.isEmpty) return 'N/A';
+    if (pre.length != now.length) return 'N/A';
     if (device == null) {
       var size = BigInt.from(0);
       for (final device in devices) {
@@ -101,7 +94,8 @@ class NetSpeed extends TimeSeq<List<NetSpeedPart>> {
   }
 
   String speedOut({String? device}) {
-    if (pre[0].device == '' || now[0].device == '') return '0kb/s';
+    if (pre.isEmpty || now.isEmpty) return 'N/A';
+    if (pre.length != now.length) return 'N/A';
     if (device == null) {
       var speed = 0.0;
       for (final device in devices) {
@@ -118,7 +112,8 @@ class NetSpeed extends TimeSeq<List<NetSpeedPart>> {
   }
 
   String sizeOut({String? device}) {
-    if (pre[0].device == '' || now[0].device == '') return '0kb';
+    if (pre.isEmpty || now.isEmpty) return 'N/A';
+    if (pre.length != now.length) return 'N/A';
     if (device == null) {
       var size = BigInt.from(0);
       for (final device in devices) {
@@ -169,7 +164,8 @@ class NetSpeed extends TimeSeq<List<NetSpeedPart>> {
         final bytesIn = BigInt.parse(bytes.first);
         final bytesOut = BigInt.parse(bytes[8]);
         results.add(NetSpeedPart(device, bytesIn, bytesOut, time));
-      } catch (_) {
+      } catch (e, s) {
+        Loggers.app.warning('Failed to parse net speed data: $item', e, s);
         continue;
       }
     }

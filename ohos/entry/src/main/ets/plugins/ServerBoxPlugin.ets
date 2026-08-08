@@ -121,9 +121,14 @@ export default class ServerBoxPlugin implements FlutterPlugin, AbilityAware {
   // ---------------- share_plus ----------------
 
   private onShareMethod(call: MethodCall, result: MethodResult): void {
-    if (call.method === 'shareFiles') {
-      this.doShareFiles(call, result);
-    } else if (call.method === 'share' || call.method === 'shareUri') {
+    if (call.method === 'share' || call.method === 'shareFiles') {
+      const paths = call.argument('paths') as Array<string> | null;
+      if (paths != null && paths.length > 0) {
+        this.doShareFiles(call, result);
+      } else {
+        this.doShareText(call, result);
+      }
+    } else if (call.method === 'shareUri') {
       this.doShareText(call, result);
     } else {
       result.notImplemented();

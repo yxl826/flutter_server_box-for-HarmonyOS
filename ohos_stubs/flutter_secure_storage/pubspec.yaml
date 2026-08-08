@@ -1,0 +1,7 @@
+name: flutter_secure_storage
+description: "In-memory no-op stub of flutter_secure_storage for HarmonyOS port (hive key stays stable per process)."
+version: 10.2.0
+publish_to: none
+
+environment:
+  sdk: ">=3.0.0"

@@ -476,11 +476,11 @@ class RenderEditableLine extends RenderLine {
           cursorHeight + 2,
         );
         break;
+      case TargetPlatform.ohos:
       case TargetPlatform.android:
       case TargetPlatform.fuchsia:
       case TargetPlatform.linux:
       case TargetPlatform.windows:
-      case TargetPlatform.ohos:
         _caretPrototype = Rect.fromLTWH(
           0.0,
           0.0, // _kCaretHeightOffset,
